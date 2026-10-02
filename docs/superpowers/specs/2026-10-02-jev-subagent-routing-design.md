@@ -1,163 +1,159 @@
-# Jev subagent model router — v1 design
+# Jev subagent model router — full-parity design
 
 Date: 2026-10-02
-Status: Approved design, revised to automatic interception of normal Tintin `Agent` calls following the user's confirmation.
+Status: Written full-parity/hybrid design approved by the user's instruction to continue. Implementation compatibility claims remain gated on the tests below.
 
-## Goal
+## Goal and source baseline
 
-Build a distributable Pi extension inspired by `da-vinci-noob/pi-jev-model-router` that uses TypeSafe Jev to choose model and thinking defaults for each eligible subagent task at launch. Users continue invoking Tintin's ordinary `Agent` tool; no special routed tool or wording is required. Never route the parent session or implement a separate launcher.
+Adapt `da-vinci-noob/pi-jev-model-router` so ordinary Tintin `Agent` calls receive task-specific model/thinking defaults without changing the parent's model. Retain every upstream feature family rather than shipping a reduced rewrite.
 
-Supported dependency: **`@tintinweb/pi-subagents` only**. The unscoped `pi-subagents` package (nicobailon) is not supported, as requested by the user.
+Baseline: upstream version 0.6.0, commit `f1a6f0381ef10899319542525f4d53c76c368396`. Adapt its classifier, deterministic policy, defaults/configuration, budget ledger, ranking, command behaviors, renderer, and tests. Preserve MIT notices. Reuse source in this repository; creating a remote GitHub fork is optional and has not occurred. Do not change the existing origin or overwrite existing documentation/history.
 
-Tintin must be loaded and expose a compatible native `Agent` tool. Installing the package without loading its extension is insufficient. If unavailable, warn with `pi install npm:@tintinweb/pi-subagents` and reload guidance; do not install anything automatically or interfere with unrelated tools.
+Supported backend: **`@tintinweb/pi-subagents` only**, initially published version 0.19.0 at git head `4f572eaa04c09d3dbc16e4a5f13a16b295e84e14`. The unscoped `pi-subagents` package is not supported.
 
-## Approved decisions
+The parity inventory in `2026-10-02-upstream-feature-parity-inventory.md` is the acceptance checklist. Every row requires tests and either equivalent behavior or the explicit child-scoped adaptation defined here. Copied but unreachable functions, no-op controls, or unobserved zero-cost assumptions do not satisfy parity.
 
-- Automatically intercept eligible native `Agent` calls through Pi's public `tool_call` event.
-- Launch-time routing only; never reassess or switch a running child.
-- Preserve explicit caller and agent-definition model/thinking settings independently.
-- Support ordinary foreground and background calls without changing their execution mode.
-- No wrapper tool, standalone launcher, workflow rewriting, or spend-budget accounting in v1.
-- Jev failures leave normal Tintin execution intact.
-- Coverage is limited to eligible calls that pass through the loaded extension's Pi tool-event pipeline, not every launch inside Tintin.
+## Approved operating model
 
-## User interface and coverage
+- Automatic Jev classification happens at eligible new-task launches, not every turn of a running child.
+- Intercept ordinary native Tintin `Agent` calls through Pi's public `tool_call` hook. No wrapper tool or special invocation is required.
+- Preserve explicit caller fields independently; Tintin preserves definition-first model/thinking precedence.
+- Observe publicly exposed top-level child sessions for usage/context and support explicit, safe child-scoped controls.
+- Never change the parent model/thinking, replace Tintin's native tool, inject a second launch, monkey-patch the backend, or import its private modules.
+- Internal workflows, mentions, schedules, nested launches, RPC launches, and child runtimes without this extension are not guaranteed automatic coverage.
+- The extension requires Tintin loaded. If missing, warn with `pi install npm:@tintinweb/pi-subagents` and reload guidance, without installing it or interfering with unrelated tools.
 
-Keep Tintin's native `Agent` schema unchanged. Users ask Pi to delegate normally; the caller supplies `prompt`, `description`, `subagent_type`, and any ordinary Tintin options.
+## Full upstream policy parity
 
-For an eligible new-task call, the extension assesses `prompt` and `subagent_type`, then fills only omitted `model` and `thinking` arguments. Preserve all other arguments, including task text, description, foreground/background mode, tools, context inheritance, and isolation. Native tool results, progress, notifications, identifiers, and control tools remain Tintin-owned.
+Preserve the pinned upstream `decide()` behavior and verify it with upstream/differential fixtures:
 
-Eligibility requires a compatible Tintin owner handshake, the expected native `Agent` schema, a nonempty prompt and agent type, and a new immediate task. Skip calls with `resume` or `schedule` set; resumption should retain its prior configuration and a scheduled task should not be assigned defaults prematurely. Do not repair invalid native inputs or classify unrelated tool calls.
+1. Four typed Jev judgments: task kind, complexity, capability deserved, and deep-reasoning probability, with confidence/usage.
+2. Demand `0.55 * complexity + 0.45 * capability`; reasoning >= 0.65 adds 0.75, <= 0.2 subtracts 0.25; clamp 0..3 and round into capability tiers.
+3. Per-kind floors, confidence fallback, budget guards, availability fallback, and cache guards in upstream order.
+4. Quick/standard/high/premium and opt-in xpremium, including promotion eligibility and restricted fallback.
+5. Specialist minTier gates, descending priority, and highest eligible minTier ordering.
+6. Built-in mixed-provider model chains, exact configured thinkingLevel pins, useDefaultModels=false, empty-chain behavior, and nearest-tier fallback.
+7. Free pools with enabled/prefer/fallback-only semantics and exact provider/model matching.
+8. Score-file ranking, tier cutoffs, per-kind scores, effective cost overrides, unknown-price ordering, and provider spreading.
+9. Full config schema, generated configuration, environment overrides, modes, skip explanations, and optional-host degradation.
 
-Register `/jev-subagent-router` for status, routing `on`/`off`, dependency availability, Jev readiness, and the last bounded decision summary. Turning routing off makes the hook a no-op.
-
-Internal workflow `agent()` calls, mentions, schedules, nested launches, direct RPC launches, and children without this extension loaded are not guaranteed coverage. A nested call that actually passes through this loaded hook may be eligible, but installation in the parent does not imply coverage in every child. Do not advertise universal interception or a child-runtime installation mechanism.
+Integration safety checks may narrow available candidates but must not silently change demand math. Record any deliberate bug/safety corrections separately and add regression tests. In particular, do not permit an automatic candidate to resolve to the same model ID under an unintended provider merely to find authentication or evade scope.
 
 ## Architecture
 
-### 1. Extension coordinator and dependency detection
+### 1. Upstream-derived routing core
 
-Own hook/command registration, session-local state, dependency detection, operation cancellation, audit entries, and lifecycle cleanup. Never call parent `setModel` or `setThinkingLevel`, register a replacement `Agent` tool, or call another launcher from the hook.
+Keep classifier, policy, configuration, budget, and ranking as independently testable modules. Their inputs contain task analysis, authenticated/permitted candidates, a spend snapshot, and an optional real child context/model baseline. They do not mutate any Pi session or launch children.
 
-Detect Tintin after session startup and refresh an unavailable/stale detection on eligible calls. `subagents:rpc:ping` reports protocol version 2. Subscribe to its correlated reply before emitting a request, use a bounded timeout, and tolerate extension load order. A missed initial `subagents:ready` event must not permanently mark Tintin unavailable.
+The classifier uses upstream endpoint/model, total timeout and bounded retries, configurable API key/environment, taxonomy, history limits, and structured response contract. Validate malformed/nonfinite/out-of-range responses rather than letting them produce unsafe defaults. Errors warn and leave native execution intact. Credentials never appear in entries, exceptions, or debug output. Keep custom endpoint support, but do not follow redirects that could leak authorization to a different host.
 
-Require both the compatible owner handshake and the expected registered native-tool schema before mutating calls. A tool named `Agent` alone is not sufficient evidence. These checks are compatibility safeguards, not authentication against malicious loaded extensions. If identity or compatibility is uncertain, leave inputs unchanged and warn appropriately.
+### 2. Tintin detection and normal launch interception
 
-### 2. Native-call interception
+Require Tintin's correlated `subagents:rpc:ping` reply `{ success: true, data: { version: 2 } }` and the expected registered `Agent` schema. Subscribe before emitting discovery requests. Refresh unavailable detection after load-order changes and on eligible calls. Owner/schema checks are compatibility safeguards, not authentication against malicious extensions.
 
-Register `pi.on("tool_call", async (event, ctx) => ...)`. Pi's declared mutation contract is to modify `event.input` in place; returning an invented `input` result is not supported.
+For a valid new immediate task, snapshot `prompt`, `subagent_type`, caller fields, routing mode, and session/config generation. Skip actual resume/schedule operations according to Tintin's truthy semantics: empty-string placeholders are ordinary new-task calls, while nonempty resume/schedule values are skipped. Do not repair invalid native inputs.
 
-Snapshot the eligible task and the original caller model/thinking before classification. Compute changes locally and apply them only after validation and a cancellation check. Recheck field omission before assigning, so no field populated by another handler is overwritten. Never clear caller arguments, mutate the prompt, or change unrelated options.
+Classify once when at least one caller model/thinking field is omitted. Omission uses `undefined`, not truthiness: `thinking: "off"` remains explicit. Preserve foreground/background mode, prompt, description, tools, isolation, and context inheritance. Treat a new short child task as a first task, not a parent-conversation continuation. Do not use unrelated parent history for classification. A bounded recent child-routing history can be supplied only for an explicitly correlated continuing child operation.
 
-Tintin resolves model and thinking independently as `agentConfig?.model ?? params.model` and `agentConfig?.thinking ?? params.thinking`. Injected Jev recommendations therefore remain defaults: Tintin itself preserves agent-definition choices without requiring a metadata inspection API.
+Compute defaults locally, apply mode behavior, then check the captured session-operation signal, per-request controller, enabled state, mode/config generation, session identity, and field omission again. Mutate only still-omitted `event.input.model` and/or `event.input.thinking` in place. Pi executes Tintin's original tool once after the hook returns. Do not call `ctx.executeTool("Agent", ...)` or RPC spawn from inside the hook.
 
-Do not spawn through `subagents:rpc:spawn`; its options override agent definitions. Do not call `ctx.executeTool("Agent", ...)` from this hook; native execution follows automatically once the hook returns, avoiding recursion and duplicate launches.
+Tintin independently resolves `agentConfig?.model ?? params.model` and `agentConfig?.thinking ?? params.thinking`; recommendations cannot override definitions. Audit injected values as proposed defaults, not confirmed effective settings. Both explicit fields skip Jev entirely. One explicit field remains untouched while the other can receive a recommendation.
 
-Handler registration order can affect other extensions' edits. Preserve values visible at the time of assignment and document that a later handler can change arguments. Do not claim precedence over arbitrary third-party hooks.
+### 3. Scope-aware candidate filtering
 
-### 3. Jev classifier
+Filter automatic candidates before passing them to native `Agent`: authentication alone is insufficient because Tintin hard-rejects caller-supplied out-of-scope models.
 
-Adapt the upstream typed judgments:
+For the pinned backend, its scope is based on exact, case-insensitive provider/model entries in Pi global/project `enabledModels`, with project replacing global. Its resolver ignores unmatched patterns and becomes unrestricted when no entries resolve. Use host settings/agent-directory APIs and documented settings files, not private backend imports. Respect project trust. Conservatively constrain automatic selections to a resolvable operator allowlist; do not depend on an inaccessible in-memory scope toggle to permit a broader automatic selection. Record this conservative safety adaptation when applicable.
 
-- Task kind.
-- Complexity.
-- Capability deserved, ignoring price.
-- Need for deep reasoning.
+If scope cannot be established safely, omit the automatic model field rather than risk preventing an otherwise valid inherited-model launch. Never modify explicit caller/definition settings or weaken native validation. Child-scoped explicit changes must also validate applicable scope and child authorization before using SDK setters; the SDK's auth check alone is not sufficient.
 
-Send bounded task and agent-identity context, not the complete parent conversation, source files, credentials, or tool outputs. Cap the combined excerpt at 8,000 characters by default and record truncation. The actual native launch prompt remains unchanged.
+### 4. Child-session observer/controller
 
-Use `TYPESAFE_API_KEY`, a configurable Jev model/endpoint, a total request timeout, cancellation, and strict response validation. Reject unknown task kinds and malformed, out-of-range, or nonfinite scores. Any classification retries must fit inside the total timeout. The router never retries native execution.
+Use Tintin's documented `globalThis[Symbol.for("pi-subagents:manager")]` registry and public `getRecord(id)` to access top-level records, including `session`, `toolCallId`, ownership, status, and cumulative lifetime usage. Do not mutate records or rely on invocation model snapshots as live state.
 
-If both model and thinking are already supplied by the caller, skip classification. Otherwise classify once and recommend only omitted fields. An explicit `thinking: "off"` is a supplied value, not an absent field. Invalid caller values remain intact for Tintin/Pi validation rather than being silently replaced.
+Correlate native tool-call IDs with child records through public lifecycle events and record fields. Do not invent identities from descriptions. Subscribe to the exposed public Pi `AgentSession` when available. Observe `model`, `thinkingLevel`, `isStreaming`, messages/events, and `getContextUsage()`. Rebind when a revived record exposes a replacement session; a record ID alone does not identify one immutable execution/session instance.
 
-### 4. Deterministic routing policy
+Track subscriptions by exact owner session, child ID, and SDK session instance. Top-level lifecycle events are not universal nested/workflow discovery. A started event can precede SDK-session readiness: attempt attachment again at correlated native tool updates/results and terminal lifecycle events, and reconcile cumulative usage rather than assuming startup attachment succeeded. If a session is absent, mark observation unavailable and keep native execution untouched. Restore bookkeeping idempotently on reload when records remain accessible; persisted totals prevent replay charges.
 
-Code maps judgments to configurable capability tiers (`quick`, `standard`, `high`, `premium`) and thinking defaults. Use ordered provider/model candidate chains and optional task-kind specialists, following the upstream separation of semantic judgment from policy.
+Automatic routing remains launch-only. Explicit commands may recommend/apply a different model to an existing child at a verified idle boundary. Use public SDK `setModel()` / `setThinkingLevel()` with no global-default persistence only after auth, scope, ownership, generation, and idle checks. Never interrupt an active stream to make a model change, queue an unbounded operation, or switch another session by mistake. If a safe change cannot be made now, report it and do not apply it.
 
-Resolve candidates against Pi's available/authenticated models. Do not require a particular provider. Validate proposed model/thinking combinations when the proposed or caller-selected model is known. Tintin performs final thinking normalization against its resolved model, since an agent-defined model can supersede a recommendation. If no suitable candidate is available, omit the affected automatic field.
+### 5. Accurate spend and budget policy
 
-Restrictions such as model scope, agent permissions, tools, and trust remain backend-owned and must not be bypassed. Explicit caller fields are never silently changed to availability fallback candidates.
+Retain upstream UTC daily/calendar-month buckets, Jev counters, pressure calculation, soft downgrade, hard downgrade, and architectural-task exception. Caps are advisory routing policy, not hard live dollar limits.
 
-Daily/monthly budgets, model-score ranking, cache-stickiness, parent-session routing, and runtime escalation are not carried into v1.
+Observe cumulative child usage from terminal events and public records, supplemented by SDK message subscriptions where supported. Account only positive deltas against persisted per-owner/per-record totals; reconcile subscription and terminal observations rather than charging both. Resume uses cumulative totals. Ancestor records can aggregate descendants: do not also add nested record costs to that same ledger.
 
-### 5. Configuration and audit
+Do not count ordinary parent model usage as child spend. Never call an unobserved child free: show unknown/incomplete attribution and last-observed state. Zero usage and unavailable usage are distinct. Use supported message timestamps where available for day/month attribution; late aggregate-only deltas are recorded at observation time and visibly labeled as late reconciliation, not falsely precise historical spend.
 
-Read optional user configuration at `~/.pi/agent/pi-jev-subagent-router.json` and trusted project configuration at `.pi/pi-jev-subagent-router.json`, with project values overriding user values. Respect the host's project-trust decision rather than introducing a new trust mechanism. Validate both layers; malformed configuration disables affected routing with a visible warning until corrected, while normal native calls continue unchanged.
+Serialize ledger read-modify-write and use atomic replacement so parallel calls/sessions do not lose deltas. Persist an accounting identity independent from the current transient extension runtime. Concurrent outstanding spend can exceed soft policy before observation; status must state this limitation. No reservations or hard dollar enforcement are claimed.
 
-Configuration covers enabled state, Jev endpoint/model/timeout, tier candidates, task specialists, and thinking mappings. There is no backend selector. Keep credentials in the environment rather than configuration examples.
+### 6. Real-child cache behavior, stickiness, and revert
 
-Persist bounded non-context entries describing native tool-call correlation, agent, proposed/supplied defaults, tier, judgment summary, and skip/fallback reason. Do not store secrets or full task text. Label recommendations as proposed unless the backend explicitly reports effective values; the router cannot infer that a recommendation won over an agent definition.
+Preserve upstream cache-price calculation, deadband, big-upgrade bypass, same-tier gating, and held explanations. Evaluate only against the targeted child's observed current model and context. Never treat the parent or last unrelated child as a warm cache baseline.
 
-Provide concise status/notifications where supported and keep routing functional without terminal UI. Native tool-result content and details are not replaced to add router output. Audit entries record routing decisions, not proof that a child was admitted or completed. Clear stale session-local references on reload/session replacement and release pending discovery listeners/controllers during shutdown.
+For a fresh child at launch there is no existing warm child cache/model switch to protect; use the upstream no-current-context path. This is a cold-context case, not a fake estimate or removed cache feature. Use real observed context for explicit child-scoped apply/recommendation operations. Unknown pricing retains upstream nonblocking behavior and is labeled appropriately.
 
-## Field precedence
+Maintain actual per-child prior model/thinking snapshots immediately before successful controller-mediated switches. `/revert` restores that child's prior snapshot at a safe idle boundary, with auth/scope validation. A proposal passed into initial native creation is not an observed model switch: if no actual prior snapshot exists, say so rather than guessing a parent/definition baseline. A completed record is an explicit-control target only if Tintin still retains its live SDK session; these commands change the configuration for a later native resume and do not themselves resume it. Disposed sessions and streaming children cannot be controlled.
 
-Treat model and thinking separately:
+An explicit apply command is necessary to exercise real-child cache behavior without adding automatic mid-run classification. It evaluates the requested task against the child's observed state, honors auto/confirm/notify modes, and switches only when allowed and idle. Revert and cache tests must exercise these actual controlled transitions, not merely pure copied functions.
 
-1. Explicit agent-definition setting, following Tintin's native semantics.
-2. Explicit caller `Agent` argument.
-3. Jev-selected default when the caller field is omitted.
-4. Backend defaults/inheritance.
+## Commands, helper tool, and UI
 
-Caller arguments stay unchanged even when an agent definition takes precedence over them. Do not read agent files, invent metadata endpoints, or send definition values back as synthetic arguments. The backend owns identity resolution, settings, scope checks, and final thinking normalization.
+Use child-specific names to coexist with the original parent router:
 
-## Routing flow
+- `/jev-subagent-router`: availability, mode, tiers, specialists, configured free pool, spend/pressure/attribution, observed children, and last decision.
+- `on` / `off`: session toggles; off cancels pending classifications and increments a generation token so off/on cannot revive stale decisions.
+- `mode auto|confirm|notify`: same user-visible semantics as upstream, applied to missing child defaults or explicit child-scoped operations.
+- `budget daily <usd>` / `budget monthly <usd>`: session-local cap changes.
+- `why [child-id]`: re-evaluate the retained last task/decision for that target without launching or switching. Report when no bounded retained task exists after reload.
+- `suggest` / `suggest --write`: rank supplied model scores, print proposed chains, optionally atomically write generated routes/kindModels before manual layers; preserve no-match protection.
+- `apply <child-id> <task>`: explicit recommendation/application against the observed idle child, including cache guards. It never submits the task as a prompt or starts another agent.
+- `revert <child-id>`: restore a verified prior model/thinking snapshot. Require explicit target identity for child mutation; no ambiguous last-child selection during parallel work.
+- `/jev-subagent-route <text>` and `jev_subagent_route`: arbitrary-text recommendation without launching/changing a session.
 
-1. Ignore unrelated, invalid, resume, scheduled, or disabled-routing calls.
-2. Verify compatible Tintin ownership and registered native schema.
-3. Preserve caller model/thinking independently; skip if neither field is missing.
-4. Classify the bounded task once.
-5. Compute and validate proposed defaults locally.
-6. Check cancellation and recheck which fields are still omitted.
-7. Mutate only those eligible `event.input` fields and persist a bounded decision.
-8. Return normally; Pi executes Tintin's original tool exactly once.
+Auto fills eligible fields; notify only records/shows the recommendation. Confirm offers permitted selected/cheaper/keep choices without changing explicit fields. Use upstream documented fallback to auto when interactive confirmation APIs are unavailable, and state that behavior in docs/status. Recheck mode/generation after any dialog.
 
-Concurrent tool calls retain separate signals, tool-call IDs, decisions, and classification operations. Never use shared parent model state to route children.
+Retain durable non-context cards, expandable analysis/trace, action glyphs, status and notifications, visible skips/fallback/held decisions, and optional lazy TUI rendering. Label launch decisions as proposed, child-controlled changes as applied/held, and explicit-setting skips as preserved. Native tool content/progress/results and completion notices remain unchanged. Decision records do not prove task completion.
 
-## Errors and cancellation
+## Configuration, persistence, and privacy
 
-- Missing dependency: notify with the Tintin installation/reload guidance. Unrelated tools continue unchanged.
-- Uncertain owner/schema/protocol: no input mutation; report routing unavailable, not a successful routing decision.
-- Missing Jev key, timeout, transport failure, malformed judgment, or unavailable routing candidates: warn and leave affected missing fields untouched so normal Tintin defaults apply.
-- Invalid routing configuration: warn, disable affected routing, and leave native calls unchanged.
-- Catch expected classifier/discovery failures; an uncaught `tool_call` exception blocks execution in Pi and would violate fail-open behavior.
-- Cancellation during classification: abort classification and apply no recommendation. Honor the host's operation cancellation; do not treat it as a reason to initiate execution. If the host is dispatching an already-cancelled call, use the supported blocking result rather than initiating a launch.
-- Native execution failures, admission, child lifetime, stop controls, and uncertain launch outcomes remain Tintin/Pi-owned. The router neither retries the call nor independently stops a child.
-- Cleanup is idempotent on success, error, cancellation, session replacement, and shutdown. Audit failures must not cause retries or duplicate native execution.
+Preserve upstream configuration keys, default model chains, custom taxonomy/floors, free/ranking/budget/cache settings, key/endpoint environment support, generated/manual merge behavior, and trusted-project rules. Use separate `pi-jev-subagent-router` user/project/generated/state/scores filenames so the parent router and this package do not share mutable ledgers or overwrite each other's config.
 
-## Testing and acceptance criteria
+Preserve existing upstream environment overrides as compatibility inputs; child-specific overrides take precedence where supplied. Document interactions when both routers are installed. Manual config remains authoritative over generated ranking. Explicit empty routes clear chains; scores cannot automatically fill xpremium. Invalid fields follow documented validation/degradation and never cause secret-bearing exceptions in a tool hook.
 
-Unit tests cover strict Jev parsing, request bounds, tier/specialist choices, per-field caller preservation, explicit thinking off, candidate authentication/availability, and proposed thinking validation.
+Support upstream apiKey configuration capability, but recommend environment credentials and never echo configured secrets. Retain only bounded last-task/history data in memory for why; durable decision entries omit raw task text and secrets. Bound analysis/context sent to Jev and tell users that task content is sent to the configured endpoint. Do not upload parent conversation by default. Endpoint redirects must not carry credentials across origins.
 
-Hook tests cover eligible `Agent` mutation, unchanged prompt/options, foreground/background preservation, resume/schedule skips, both fields explicit, one field explicit, disabled routing, unrelated `Agent`, dependency missing, protocol/schema mismatch, classification failure, timeout, cancellation, concurrent calls, and rechecking omission after asynchronous work. Assert the hook never invokes a launcher or changes the parent model/thinking.
+Restore branch-sensitive entries appropriately and isolate owner sessions. Reload/shutdown must cancel pending classifications, unsubscribe bus/session listeners, and invalidate controller generations. Observers/controllers perform no long-lived startup work in the extension factory; initialize in lifecycle callbacks.
 
-Lifecycle tests cover subscribe-before-ping, reply correlation, discovery timeout, startup load order, noninteractive mode, and listener/controller cleanup on reload/shutdown.
+## Failure, cancellation, and concurrency
 
-Integration validation against published `@tintinweb/pi-subagents@0.19.0` and a host with argument-mutating `tool_call` support must demonstrate:
+Expected classifier/discovery/audit/notification failures are caught so normal native execution can proceed unchanged. Native validation failures are not retried. No alternative backend or second launcher is used.
 
-- A normal Pi-issued `Agent` call invokes Jev routing without special wording or a wrapper.
-- Native foreground and background modes remain unchanged.
-- Agent-definition model/thinking settings independently win over injected defaults.
-- Caller fields remain unchanged and take precedence over Jev proposals.
-- Thinking is normalized against an agent-defined model that supersedes a recommended model.
-- Jev failure permits normal native execution with existing defaults.
-- Native progress, results, notifications, and control receipts remain intact.
-- Workflow/mention/schedule paths are not falsely claimed as covered.
+The hook captures a session-operation signal; Pi does not expose exact independent per-call execution signals there. Give each classifier its own controller, but do not claim precise nested-call cancellation fidelity. Core execution retains its own signal and checks it after the hook. On cancellation or stale generations, apply no defaults. Do not interpret an aborted operation as a request to initiate native execution.
 
-Use injected classifier transport and event-bus fixtures; default tests must not require paid Jev/model calls. Optional live smoke tests require explicit credentials and operator opt-in. Fixture tests alone do not establish end-to-end backend compatibility.
+Per-call snapshots and tool-call correlation prevent concurrent decisions from sharing current-child state. Per-child idle/ownership checks prevent command races. Ledger mutations are serialized; dialogs and child model mutation are scoped to their exact target. Other extensions may later mutate inputs, so the router cannot claim precedence over arbitrary subsequent handlers.
 
-## Distribution and attribution
+## Acceptance and implementation gates
 
-Ship a TypeScript Pi package with an explicit extension entry in `package.json`, host-provided peer dependencies, configuration examples, and usage instructions. Tintin is installed and loaded separately, not bundled. Do not advertise unscoped `pi-subagents` compatibility.
+Retain/adapt upstream tests and differential fixtures for all features in the parity inventory. Add integration tests for:
 
-Retain upstream MIT notices for copied code. Explain that this project routes eligible native subagent calls rather than parent prompts, and document all coverage limits prominently.
+- Real input mutation reaching Tintin native execution exactly once, foreground/background preserved.
+- Independent definition-first/caller-first-to-Jev precedence and explicit thinking off.
+- Authenticated but excluded candidate filtering under Tintin scopeModels, including no-permitted-candidate fail-open behavior.
+- True/empty-string resume/schedule eligibility and short first child tasks.
+- Mode/dialog outcomes, off/on races, config/session replacement, and session-operation cancellation limitations.
+- Registry correlation, session-instance replacement, SDK subscriptions, actual effective model/context, and listener cleanup.
+- Message/terminal duplicate usage, resumed cumulative totals, ancestry double-count prevention, UTC buckets, late attribution, concurrent atomic ledger writes, and unknown spend reporting.
+- Real idle-child apply/cache hold/revert, missing prior snapshot, scope/auth rejection, no persistent global changes, and refusal while streaming.
+- Config layering, generated writes, ranking/free/xpremium behavior, secret handling, and parent-router coexistence.
+- UI degradation, preserved native progress/results, no parent switching, and honest uncovered internal paths.
 
-## Research references and limits
+Before claiming compatibility, test published Tintin code against a supported Pi host. Confirm SDK signatures, record/session readiness and ownership, scope adapters, streaming/idle safety, and cleanup on real foreground/background calls. Mocked tests alone do not establish these integration claims. Default tests use fake Jev/provider transports; live paid smoke tests require explicit operator opt-in.
 
-- Upstream router: https://github.com/da-vinci-noob/pi-jev-model-router — inspected v0.6.0 classifier and routing documentation.
-- Pi extension API: locally installed Pi 1.0.0 `docs/extensions.md` and `extensions/types.d.ts`. `ToolCallEventResult` documents mutation of `event.input` in place; thrown hook errors fail closed.
-- Tintin published artifact: https://registry.npmjs.org/@tintinweb/pi-subagents/0.19.0 — inspected tarball at git head `4f572eaa04c09d3dbc16e4a5f13a16b295e84e14`.
-- Tintin native precedence: published `src/index.ts` and `src/invocation-config.ts`; RPC launch precedence in `src/agent-runner.ts` differs.
-- Tintin discovery: published `src/cross-extension-rpc.ts` and `docs/rpc.md`; ping reports protocol version 2, with no definition-metadata RPC.
+If a required safe public child-session operation cannot be established, stop at that integration gate and report the specific missing contract; do not silently downgrade a required feature or use a private monkey-patch.
 
-The implementation plan must test the native tool-event pipeline against published code before claiming compatibility. No private imports, replacement native tools, monkey-patching, or inferred universal launch hooks are permitted.
+## Review findings incorporated
+
+The review verified Pi input mutation, Tintin independent definition-first fields, protocol-v2 discovery, and public project-trust checks. Its four corrections are explicit here: scope filtering, honest session-signal semantics, final generation/enabled checks, and native-compatible empty resume/schedule placeholders.
+
+Child API research verified cumulative lifecycle usage and the documented top-level registry/session reference. Installed Pi SDK exposes model/thinking/context/subscription/setter APIs; safe integration and backend restrictions remain test gates, not assumed from method existence.
