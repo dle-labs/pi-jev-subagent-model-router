@@ -1,0 +1,8 @@
+# Archived unified diffs require leading context spaces, including blank lines
+# and spaces before source indentation tabs. Preserve patch bytes and hashes.
+/upstream-patches/pi-atomic-configuration.patch whitespace=-blank-at-eol,-space-before-tab
+/upstream-patches/tintin-atomic-configuration.patch whitespace=-blank-at-eol,-space-before-tab
+
+# This immutable upstream baseline contains three inherited trailing spaces.
+# Preserve byte-identical provenance; other whitespace checks remain enabled.
+/vendor/pi-jev-model-router/extensions/pi-jev-model-router/index.ts whitespace=-blank-at-eol
