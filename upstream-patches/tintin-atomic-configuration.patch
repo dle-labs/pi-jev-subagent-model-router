@@ -1,0 +1,1280 @@
+diff --git a/README.md b/README.md
+index dd936df..f61ab0e 100644
+--- a/README.md
++++ b/README.md
+@@ -751,6 +751,18 @@ All RPC replies use a standardized envelope: `{ success: true, data?: T }` on su
+ 
+ **Full reference:** [`docs/rpc.md`](https://github.com/tintinweb/pi-subagents/blob/master/docs/rpc.md) — the complete spawn-option surface (including the fields that are silently stripped), every error string, the completion-notification race, the `Symbol.for("pi-subagents:manager")` registry, and what protocol version `2` does and does not promise. [`tintinweb/pi-tasks`](https://github.com/tintinweb/pi-tasks) is the reference implementation.
+ 
++### Retained idle-child configuration (registry only)
++
++`globalThis[Symbol.for("pi-subagents:manager")]` also exposes:
++
++- `getIdleChildConfigurationSnapshot(childId)` → `{ status: "ready", childId, snapshot }` or `{ status: "rejected", reason }`.
++- `configureIdleChild({ operationId, childId, expectedSessionId, expectedRevision, model: { provider, id }, thinking, signal? })` → a promise of Pi's `committed`/`noop` receipt (`before`, `after`, `revision`, `operationId`, `notificationErrors`) or `{ status: "rejected", operationId, reason }`.
++- `getIdleChildConfigurationReceipt({ operationId, childId, expectedSessionId })` → an authorized committed receipt or a structured rejection (`not-found` for missing/noop/refused operations).
++
++Only completed retained top-level children of the active root session qualify. Ownership, manager admission generations, context/registry identity, and fresh **mandatory** model scope are checked at admission and at Pi's atomic commit boundary. Unlike the legacy optional spawn scope policy, this path resolves Pi patterns/globs against the full current registry, and malformed/unreadable settings, diagnostics and restricted-empty results refuse control. Project `enabledModels` overrides global; absent fields and explicit `[]` are unrestricted.
++
++Requires the additive public Pi conditional-configuration APIs and synchronous scope resolver; missing capability returns `unsupported`, without breaking ordinary Agent loading on Pi 0.84.2. Never waits for idle, resumes/aborts a child, changes global defaults, or falls back to raw setters. Identical operation retries retain stable validator/signal identity; conflicting reuse and new IDs beyond the 1024-per-record capacity are refused. Receipts are process-local. See [the exact types, refusal semantics and unit-test limits](docs/rpc.md#conditional-retained-idle-child-configuration).
++
+ ### Discovery
+ 
+ Listen for `subagents:ready` to know when RPC handlers are available:
+@@ -949,6 +961,8 @@ src/
+   # Execution
+   agent-runner.ts     # Session creation, execution, graceful max_turns, steer/resume
+   agent-manager.ts    # Agent lifecycle, concurrency queue, completion notifications
++  idle-child-configuration.ts # Ownership-checked atomic configuration registry methods
++  control-model-scope.ts # Strict synchronous uncached scope for explicit child controls
+   nested-tools.ts     # Delegation tools handed to subagents (nested spawn/collect/steer)
+   child-context.ts    # AsyncLocalStorage flag marking work done for a child session
+   abortable.ts        # Race a wait against Esc without cancelling the background child
+diff --git a/docs/rpc.md b/docs/rpc.md
+index cdc1510..9fd12bb 100644
+--- a/docs/rpc.md
++++ b/docs/rpc.md
+@@ -139,11 +139,86 @@ One related thing that lives nowhere else: on every top-level settle, pi-subagen
+ | `hasRunning()` | `() => boolean` | |
+ | `spawn(pi, ctx, type, prompt, options)` | `=> string` | **Is** `spawnTopLevel`, so the strip list above applies identically |
+ | `getRecord(id)` | `=> AgentRecord \| undefined` | Filtered through `isTopLevelAgent`, so someone else's child comes back `undefined` rather than leaking |
++| `getIdleChildConfigurationSnapshot(childId)` | `=> ChildConfigurationSnapshotResult` | Checked optimistic configuration token for a retained completed child |
++| `configureIdleChild(request)` | `=> Promise<ChildConfigurationResult>` | Atomic, conditional model-and-thinking change; never starts or resumes work |
++| `getIdleChildConfigurationReceipt(request)` | `=> ChildConfigurationResult` | Committed receipt only; missing/noop/refused operations return `not-found` |
+ 
+ The slot is claimed by the first activation only; subagent sessions re-activate this extension in the same process, and unconditionally overwriting would point the registry at a short-lived child manager whose shutdown would then delete the root session's entry ([#128](https://github.com/tintinweb/pi-subagents/pull/128)). Child activations leave it alone, and shutdown releases it only if this activation claimed it (`src/index.ts:747-750`, `:1105-1107`).
+ 
+ Prefer the bus. The registry has no reply envelope, no version, and no availability event — `globalThis[Symbol.for("pi-subagents:manager")] === undefined` is the only probe you get, and it is also `undefined` in a session that filtered pi-subagents out. Reach for it for the two things the bus has no verb for — *is anything still running*, and *give me a settled record back* — or for a headless host that wants to block on `waitForAll()` before exiting.
+ 
++### Conditional retained-idle-child configuration
++
++These three **registry-only** methods require Pi's public `getConfigurationSnapshot`, `configureIfIdle`, `getConfigurationReceipt` session methods and root-package `resolveModelScopeFromModels` export. They return `unsupported` when any capability is absent; ordinary spawning/loading remains supported on the pinned Pi 0.84.2 development dependency. There is no raw-setter or private-runtime fallback. This does not add a bus channel or change protocol version 2.
++
++Concrete structural types are exported from `src/idle-child-configuration.ts`:
++
++```typescript
++type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
++interface ChildConfigurationSnapshot {
++  readonly sessionId: string;
++  readonly revision: number;
++  readonly model: Readonly<{ provider: string; id: string }> | undefined;
++  readonly thinkingLevel: ThinkingLevel;
++}
++type ChildConfigurationReason =
++  | "busy" | "disposed" | "stale" | "invalid" | "unauthorized" | "cancelled"
++  | "operation-conflict" | "capacity" | "storage" | "unsupported"
++  | "not-found" | "scope-unknown" | "scope-denied";
++type ChildConfigurationSnapshotResult =
++  | { status: "ready"; childId: string; snapshot: ChildConfigurationSnapshot }
++  | { status: "rejected"; reason: ChildConfigurationReason };
++interface ConfigureIdleChildRequest {
++  operationId: string;
++  childId: string;
++  expectedSessionId: string;
++  expectedRevision: number;
++  model: { provider: string; id: string };
++  thinking: ThinkingLevel;
++  signal?: AbortSignal;
++}
++interface ChildConfigurationReceiptRequest {
++  operationId: string;
++  childId: string;
++  expectedSessionId: string;
++}
++interface ChildConfigurationReceipt {
++  readonly status: "committed" | "noop";
++  readonly operationId: string;
++  readonly before: ChildConfigurationSnapshot;
++  readonly after: ChildConfigurationSnapshot;
++  readonly revision: number;
++  readonly notificationErrors: readonly string[];
++}
++type ChildConfigurationResult = ChildConfigurationReceipt |
++  { status: "rejected"; operationId: string; reason: ChildConfigurationReason };
++```
++
++Snapshot and receipt lookup are synchronous. `configureIdleChild` calls Pi's atomic operation once, without waiting for idle, enqueuing a switch, aborting work, altering defaults, or launching another child. Pi owns transcript publication and pair/revision atomicity. `noop` is not a committed switch; `notificationErrors` report post-commit delivery failures, never a rollback. The ready snapshot is Pi's immutable value, not an idle reservation: native work may start before the next call, producing a refusal.
++
++Only completed, retained **top-level** records owned by the currently active root session are controllable. Actual `ctx.sessionManager.getSessionId()` and session-manager identity captured at spawn establish ownership; caller `rootSessionId` is lineage only. Missing ownership refuses control without breaking ordinary spawning. Missing/removed children return `not-found`; non-completed, owned-by-another-root/workflow/agent, pending-steer, queued, active, replaced, or disposed manager records return `unauthorized`. Pi can additionally refuse native activity as `busy`/`stale` or SDK disposal as `disposed`. The same authorization gates receipt exposure and retries.
++
++Authorization is repeated synchronously at Pi's commit boundary: registry identity, active context/epoch, root identity, same record and SDK instance, session ID/revision, manager admission generation, completed status, pending steers and queues, and fresh model scope. Manager admission generations change **before** foreground/background resume, queue/start, steer, abort, replacement/removal and disposal, so even a run that finishes during authentication invalidates an old attempt. `session_before_switch` invalidates the epoch immediately; a cancelled switch retains the active context, so a new attempt still works. Rebinding and shutdown invalidate it too. This is cooperative synchronization, not isolation from hostile in-process extensions or arbitrary direct record/SDK mutations.
++
++Scope is **mandatory for these explicit controls**, independently of the optional legacy `scopeModels` spawn policy. It reads the actual parent's captured configuration cwd and public `getAgentDir()` on every check, with the project `enabledModels` field overriding global. Absent files/fields and explicit `[]` mean unrestricted; malformed, unreadable or wrongly typed settings mean `scope-unknown`. Nonempty patterns use Pi's synchronous public resolver against the full current `registry.getAvailable?.() ?? registry.getAll()` universe. Globs and Pi's other pattern forms work; any diagnostic, unmatched pattern or restricted-empty result refuses with `scope-denied`. No scope cache or router candidate subset is used. Settings/registry changes during authentication are rechecked, not silently inherited. Existing launch scope behavior is unchanged.
++
++Use a nonempty operation ID of at most 256 characters. The wrapper retains a stable request and validator for every Pi-admitted ID; retries must have identical child/session/revision/model/thinking values **and the same signal object**. Conflicting reuse returns `operation-conflict`. In-flight duplicates coalesce; a committed receipt can replay during notification delivery without waiting on itself. New IDs are refused at 1024 cached operations per retained record, never silently evicted. Noop and refused Pi operations also occupy capacity. Receipts and IDs are process-local, not recovered from disk. A scope/ownership change can deny access to an existing receipt; denial of receipt access does not mean a previous commit was undone.
++
++```typescript
++const ready = registry.getIdleChildConfigurationSnapshot(childId);
++if (ready.status === "ready") {
++  const result = await registry.configureIdleChild({
++    operationId: crypto.randomUUID(), childId,
++    expectedSessionId: ready.snapshot.sessionId,
++    expectedRevision: ready.snapshot.revision,
++    model: { provider: "local", id: "review-model" }, thinking: "off",
++  });
++  // Inspect result.status; never infer a switch from the requested pair.
++}
++```
++
++`test/idle-child-configuration.test.ts` and `test/idle-child-registry.test.ts` are **unit** tests: real manager/registry/lifecycle with fake atomic sessions and scope resolver boundaries. They do not prove Pi transcript atomicity, native pattern resolution, or real provider authentication.
++
+ ## Protocol versions
+ 
+ `subagents:rpc:ping` replies `{ version: PROTOCOL_VERSION }`, currently `2` (`src/cross-extension-rpc.ts:33`). The constant was introduced already equal to `2` in 0.5.0; "v1" is a retroactive name for the pre-envelope contract, where spawn replied with a bare `{ id }` or `{ error }`, stop replied `{ success: boolean }` with no message, and each handler caught its own errors.
+diff --git a/src/agent-manager.ts b/src/agent-manager.ts
+index 8c973b6..516fca3 100644
+--- a/src/agent-manager.ts
++++ b/src/agent-manager.ts
+@@ -362,6 +362,37 @@ async function shutdownChildSession(session: AgentSession | undefined): Promise<
+ 
+ export class AgentManager {
+   private agents = new Map<string, AgentRecord>();
++  private disposed = false;
++  // Not on the publicly mutable record: lineage and UI timestamps are not ownership.
++  private controlMetadata = new WeakMap<AgentRecord, {
++    ownerId?: string; ownerSessionManager: ExtensionContext["sessionManager"]; topLevel: boolean;
++    configCwd: string; generation: number; active: boolean; pendingSteers: number; session?: AgentSession;
++  }>();
++
++  private invalidateAdmission(record: AgentRecord): void {
++    const metadata = this.controlMetadata.get(record);
++    if (metadata) metadata.generation++;
++  }
++
++  /** Internal control lease. The registry exposes only the checked configuration operations. */
++  getIdleChildLease(id: string, ctx: ExtensionContext) {
++    const record = this.agents.get(id);
++    const metadata = record && this.controlMetadata.get(record);
++    if (!record || !metadata) return undefined;
++    const session = metadata.session;
++    const generation = metadata.generation;
++    const valid = () => {
++      try {
++        return !this.disposed && this.agents.get(id) === record &&
++          metadata.topLevel && isTopLevelAgent(record) && !!metadata.ownerId &&
++          ctx.sessionManager === metadata.ownerSessionManager && ctx.sessionManager?.getSessionId?.() === metadata.ownerId &&
++          record.session === session && !!session && !metadata.active &&
++          metadata.generation === generation && record.status === "completed" &&
++          metadata.pendingSteers === 0 && !record.pendingSteers?.length && !this.startups.has(id) && !this.queue.some(q => q.id === id);
++      } catch { return false; }
++    };
++    return valid() && session ? { record, session, configCwd: metadata.configCwd, valid } : undefined;
++  }
+   private cleanupInterval: ReturnType<typeof setInterval>;
+   private onComplete?: OnAgentComplete;
+   private onStart?: OnAgentStart;
+@@ -542,6 +573,17 @@ export class AgentManager {
+       maxSubagentDepth: options.maxSubagentDepth,
+       rootSessionId: options.rootSessionId,
+     };
++    let ownerId: string | undefined;
++    try { ownerId = ctx.sessionManager?.getSessionId?.(); } catch { /* ordinary spawning remains supported */ }
++    this.controlMetadata.set(record, {
++      ownerId: typeof ownerId === "string" && ownerId.length > 0 ? ownerId : undefined,
++      ownerSessionManager: ctx.sessionManager,
++      topLevel: isTopLevelAgent(options),
++      configCwd: options.configCwd ?? ctx.cwd,
++      generation: 0,
++      active: true,
++      pendingSteers: 0,
++    });
+     this.agents.set(id, record);
+     // After the insert, so `takenHandles()` already counts this record's own
+     // handle — a spawn named after its own type gets `explore-2`, not a
+@@ -557,6 +599,7 @@ export class AgentManager {
+       // Queue it — started when a running agent in the same pool completes.
+       // Idempotent for background (already "queued"); the flip that matters is
+       // a blocking foreground spawn, optimistically marked "running" above.
++      this.invalidateAdmission(record);
+       record.status = "queued";
+       // A queued record never reaches startAgent's signal wiring, so arm the
+       // parent abort here or Esc could not release the position.
+@@ -597,6 +640,7 @@ export class AgentManager {
+     if (signal.aborted) {
+       const record = this.agents.get(id);
+       if (record) {
++        this.invalidateAdmission(record);
+         record.status = "stopped";
+         record.completedAt = Date.now();
+       }
+@@ -634,6 +678,7 @@ export class AgentManager {
+           record.completedAt = Date.now();
+           this.onComplete?.(record);
+         } else {
++          this.invalidateAdmission(record);
+           this.agents.delete(id);
+         }
+         // The agent never kept its slot (startAgent gives it back on failure),
+@@ -671,6 +716,7 @@ export class AgentManager {
+     // Re-validate a caller-supplied cwd: queued spawns can start minutes after
+     // spawn()'s check, and the directory may be gone by then (TOCTOU). Same
+     // curated errors; drainQueue parks a throw on the record as an error.
++    this.invalidateAdmission(record);
+     assertValidSpawnCwd(options.cwd);
+     // Single resolution point for the caller-supplied cwd — the worktree base
+     // repo and both cleanup calls below MUST agree on this value forever.
+@@ -804,6 +850,9 @@ export class AgentManager {
+         maxSubagentDepth: record.maxSubagentDepth,
+       },
+       onSessionCreated: (session) => {
++        this.invalidateAdmission(record);
++        const metadata = this.controlMetadata.get(record);
++        if (metadata) metadata.session = session;
+         record.session = session;
+         // Capture now, while the session object exists: after eviction this
+         // path is the only thing that can reopen the conversation, and an
+@@ -839,7 +888,7 @@ export class AgentManager {
+         // Flush any steers that arrived before the session was ready
+         if (record.pendingSteers?.length) {
+           for (const msg of record.pendingSteers) {
+-            session.steer(msg).catch(() => {});
++            this.deliverSessionSteer(record, session, msg).catch(() => {});
+           }
+           record.pendingSteers = undefined;
+         }
+@@ -867,6 +916,9 @@ export class AgentManager {
+         // this is a machine-readable payload one caller asked for by schema.
+         record.structuredJson = structuredJson;
+         record.structuredRetried = structuredRetried;
++        if (record.session !== session) this.invalidateAdmission(record);
++        const metadata = this.controlMetadata.get(record);
++        if (metadata) metadata.session = session;
+         record.session = session;
+         record.completedAt ??= Date.now();
+ 
+@@ -966,6 +1018,8 @@ export class AgentManager {
+    *   the release disagree with the acquire.
+    */
+   private settleRun(record: AgentRecord, guardCallback: boolean, pool: Pool | undefined): void {
++    const metadata = this.controlMetadata.get(record);
++    if (metadata) metadata.active = false;
+     if (!record.isBackground) record.resultConsumed = true;
+     if (pool === "background") this.runningBackground--;
+     else if (pool === "foreground") this.runningForeground--;
+@@ -1111,7 +1165,12 @@ export class AgentManager {
+     options?: ResumeOptions,
+   ): Promise<AgentRecord | undefined> {
+     const record = this.agents.get(id);
+-    if (!record?.session) return undefined;
++    if (!record?.session || this.disposed) return undefined;
++    // Both branches must reject reentry before changing a record or admitting work.
++    if (record.status === "running" || record.status === "queued") return undefined;
++    this.invalidateAdmission(record);
++    const metadata = this.controlMetadata.get(record);
++    if (metadata) metadata.active = true;
+ 
+     // Background resume: settle asynchronously and notify on completion exactly
+     // like a background spawn, returning immediately with the record still
+@@ -1129,8 +1188,6 @@ export class AgentManager {
+       // whose settle path would abort the LIVE run's children and report a
+       // failure for a run that is still going. Refuse instead, leaving the
+       // record untouched; the caller decides whether to wait or steer.
+-      if (record.status === "running" || record.status === "queued") return undefined;
+-
+       record.isBackground = true;
+       record.resultConsumed = false;
+       record.result = undefined;
+@@ -1206,6 +1263,7 @@ export class AgentManager {
+     // Same contract as the spawn settle paths: children spawned during the
+     // resumed turn must not outlive it — nothing else can see or reach them.
+     this.abortOwnedChildren(id);
++    if (metadata) metadata.active = false;
+ 
+     return record;
+   }
+@@ -1225,6 +1283,7 @@ export class AgentManager {
+     options: ResumeOptions,
+   ) {
+     if (!record.session) return;
++    this.invalidateAdmission(record);
+ 
+     record.status = "running";
+     record.startedAt = Date.now();
+@@ -1251,6 +1310,8 @@ export class AgentManager {
+     try { options.onStarted?.(); } catch { /* ignore caller wiring errors */ }
+ 
+     const settle = () => {
++      const metadata = this.controlMetadata.get(record);
++      if (metadata) metadata.active = false;
+       detachParentSignal?.();
+       detachParentSignal = undefined;
+       // Final flush of streaming output file
+@@ -1316,16 +1377,41 @@ export class AgentManager {
+    * session is created. Returns false if the agent can't accept steering
+    * (unknown id, or no longer running/queued).
+    */
+-  steer(id: string, message: string): boolean {
++  private deliverSteer(id: string, message: string): boolean | Promise<unknown> {
+     const record = this.agents.get(id);
+     if (!record) return false;
+     if (record.status !== "running" && record.status !== "queued") return false;
+-    if (record.session) {
+-      record.session.steer(message).catch(() => {});
+-    } else {
+-      if (!record.pendingSteers) record.pendingSteers = [];
+-      record.pendingSteers.push(message);
++    if (record.session) return this.deliverSessionSteer(record, record.session, message);
++    this.invalidateAdmission(record);
++    if (!record.pendingSteers) record.pendingSteers = [];
++    record.pendingSteers.push(message);
++    return true;
++  }
++
++  private deliverSessionSteer(record: AgentRecord, session: AgentSession, message: string): Promise<unknown> {
++    this.invalidateAdmission(record);
++    const metadata = this.controlMetadata.get(record);
++    if (metadata) metadata.pendingSteers++;
++    try {
++      return session.steer(message).finally(() => { if (metadata) metadata.pendingSteers--; });
++    } catch (error) {
++      if (metadata) metadata.pendingSteers--;
++      throw error;
+     }
++  }
++
++  steer(id: string, message: string): boolean {
++    const delivery = this.deliverSteer(id, message);
++    if (typeof delivery === "boolean") return delivery;
++    void delivery.catch(() => {});
++    return true;
++  }
++
++  /** Tool path preserves SDK errors while sharing the manager admission boundary. */
++  async steerAndWait(id: string, message: string): Promise<boolean> {
++    const delivery = this.deliverSteer(id, message);
++    if (typeof delivery === "boolean") return delivery;
++    await delivery;
+     return true;
+   }
+ 
+@@ -1407,6 +1493,7 @@ export class AgentManager {
+   abort(id: string): boolean {
+     const record = this.agents.get(id);
+     if (!record) return false;
++    this.invalidateAdmission(record);
+ 
+     // Remove from queue if queued. No decrement — the slot was never taken —
+     // and no onComplete, matching what a queued background abort has always
+@@ -1427,6 +1514,7 @@ export class AgentManager {
+ 
+   /** Dispose a record's session and remove it from the map. */
+   private removeRecord(id: string, record: AgentRecord): void {
++    this.invalidateAdmission(record);
+     this.tombstone(record);
+     const session = record.session;
+     // Detached before the shutdown starts, so the record leaves the map at once and
+@@ -1511,6 +1599,7 @@ export class AgentManager {
+     for (const queued of this.queue) {
+       const record = this.agents.get(queued.id);
+       if (record) {
++        this.invalidateAdmission(record);
+         record.status = "stopped";
+         record.completedAt = Date.now();
+         count++;
+@@ -1520,6 +1609,7 @@ export class AgentManager {
+     // Abort running agents
+     for (const record of this.agents.values()) {
+       if (record.status === "running") {
++        this.invalidateAdmission(record);
+         record.abortController?.abort();
+         record.status = "stopped";
+         record.completedAt = Date.now();
+@@ -1555,6 +1645,8 @@ export class AgentManager {
+    *   it (tests, teardown of a manager that never spawned) skips the prune.
+    */
+   async dispose(pi?: ExtensionAPI): Promise<void> {
++    this.disposed = true;
++    for (const record of this.agents.values()) this.invalidateAdmission(record);
+     clearInterval(this.cleanupInterval);
+     // Clear queue — via dequeue, so anyone blocked in spawnAndWait is woken
+     // rather than left awaiting a gate nothing will ever resolve.
+diff --git a/src/index.ts b/src/index.ts
+index 4989968..3e284e8 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -19,12 +19,13 @@ import { abortable } from "./abortable.js";
+ import { hasAgentBadge, renderAgentName } from "./agent-color.js";
+ import { buildNewAgentFile, disableInContent, enableInContent, isEmptyStub, locateAgentFile, personalAgentsDir, projectAgentsDir, serializeAgentFile } from "./agent-file-toggle.js";
+ import { AgentManager, isTopLevelAgent } from "./agent-manager.js";
+-import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, getRememberAgents, normalizeMaxTurns, resolveEffectiveMaxTurns, SUBAGENT_TOOL_NAMES, setDefaultMaxTurns, setGraceTurns, setRememberAgents, steerAgent } from "./agent-runner.js";
++import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, getRememberAgents, normalizeMaxTurns, resolveEffectiveMaxTurns, SUBAGENT_TOOL_NAMES, setDefaultMaxTurns, setGraceTurns, setRememberAgents } from "./agent-runner.js";
+ import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, getAvailableTypes, getConfig, getFallbackSubagent, isDefaultsDisabled, NO_FALLBACK, registerAgents, resolveSpawnType, resolveType, setDefaultsDisabled, setFallbackSubagent } from "./agent-types.js";
+ import { inChildSessionContext } from "./child-context.js";
+ import { type RpcHandle, registerRpcHandlers } from "./cross-extension-rpc.js";
+ import { loadCustomAgents } from "./custom-agents.js";
+ import { GroupJoinManager } from "./group-join.js";
++import { type ChildConfigurationReceiptRequest, type ConfigureIdleChildRequest, IdleChildControls } from "./idle-child-configuration.js";
+ import { isolationParam, resolveAgentInvocationConfig, resolveJoinMode } from "./invocation-config.js";
+ import { describeMention, handleBase, isReservedHandle, parseMention, resolveHandleToType, stripAgentPrefix } from "./mention.js";
+ import { runMentionClone } from "./mention-clone.js";
+@@ -735,7 +736,17 @@ export default function (pi: ExtensionAPI) {
+     return resolved?.kind === "live" ? resolved.record : undefined;
+   };
+ 
++  let currentCtx: ExtensionContext | undefined;
++  let controlEpoch = 0;
++  const idleChildControls = new IdleChildControls(manager, () => ({
++    ctx: currentCtx,
++    epoch: controlEpoch,
++    ownsRegistry: ownsManagerRegistry && (globalThis as Record<symbol, unknown>)[MANAGER_KEY] === registryEntry,
++  }));
+   const registryEntry = {
++    getIdleChildConfigurationSnapshot: (childId: string) => idleChildControls.getIdleChildConfigurationSnapshot(childId),
++    configureIdleChild: (request: ConfigureIdleChildRequest) => idleChildControls.configureIdleChild(request),
++    getIdleChildConfigurationReceipt: (request: ChildConfigurationReceiptRequest) => idleChildControls.getIdleChildConfigurationReceipt(request),
+     waitForAll: () => manager.waitForAll(),
+     hasRunning: () => manager.hasRunning(),
+     spawn: spawnTopLevel,
+@@ -750,7 +761,6 @@ export default function (pi: ExtensionAPI) {
+   }
+ 
+   // --- Cross-extension RPC via pi.events ---
+-  let currentCtx: ExtensionContext | undefined;
+   // RPC handlers + the `subagents:ready` broadcast are wired on `session_start`
+   // (a bound lifecycle event), not at factory time. pi runs every extension
+   // factory before the `extensions:` filter and only fires lifecycle events for
+@@ -787,6 +797,7 @@ export default function (pi: ExtensionAPI) {
+   // This also wires the RPC handlers and broadcasts readiness — on the first
+   // bound session_start, so a filtered-out activation never advertises (#142).
+   pi.on("session_start", async (_event, ctx) => {
++    controlEpoch++;
+     currentCtx = ctx;
+     if (ctx.hasUI) {
+       widget.setUICtx(ctx.ui);
+@@ -1088,6 +1099,9 @@ export default function (pi: ExtensionAPI) {
+   });
+ 
+   pi.on("session_before_switch", () => {
++    // Invalidates pending commits even if another handler cancels the switch.
++    // Keep currentCtx: a cancelled switch leaves that context active.
++    controlEpoch++;
+     manager.clearCompleted(true);
+     scheduler.stop();
+   });
+@@ -1095,6 +1109,7 @@ export default function (pi: ExtensionAPI) {
+   // On shutdown, abort all agents immediately and clean up.
+   // If the session is going down, there's nothing left to consume agent results.
+   pi.on("session_shutdown", async () => {
++    controlEpoch++;
+     rpcHandle?.unsubSpawn();
+     rpcHandle?.unsubStop();
+     rpcHandle?.unsubPing();
+@@ -2843,14 +2858,13 @@ Terse command-style prompts produce shallow, generic work.
+       }
+       if (!record.session) {
+         // Session not ready yet — queue the steer for delivery once initialized
+-        if (!record.pendingSteers) record.pendingSteers = [];
+-        record.pendingSteers.push(params.message);
++        manager.steer(record.id, params.message);
+         pi.events.emit("subagents:steered", { id: record.id, message: params.message });
+         return textResult(`Steering message queued for agent ${record.id}. It will be delivered once the session initializes.`);
+       }
+ 
+       try {
+-        await steerAgent(record.session, params.message);
++        await manager.steerAndWait(record.id, params.message);
+         pi.events.emit("subagents:steered", { id: record.id, message: params.message });
+         const tokens = formatLifetimeTokens(record);
+         const contextPercent = getSessionContextPercent(record.session);
+diff --git a/test/steer-subagent-wiring.test.ts b/test/steer-subagent-wiring.test.ts
+index 850f8fb..8d0515e 100644
+--- a/test/steer-subagent-wiring.test.ts
++++ b/test/steer-subagent-wiring.test.ts
+@@ -17,25 +17,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
+ 
+ vi.mock("../src/agent-runner.js", async () => {
+   const actual = await vi.importActual<typeof import("../src/agent-runner.js")>("../src/agent-runner.js");
+-  return { ...actual, runAgent: vi.fn(), steerAgent: vi.fn() };
++  return { ...actual, runAgent: vi.fn() };
+ });
+ 
+-import { runAgent, steerAgent } from "../src/agent-runner.js";
++import { runAgent } from "../src/agent-runner.js";
+ import subagentsExtension from "../src/index.js";
+ import { ctx, flush, makePi, textOf } from "./helpers/boot-extension.js";
+ 
+-// steerAgent and runAgent are module-level mocks shared by every case here, so
+-// call history has to be reset or a "was never called" assertion depends on the
+-// order the cases happen to run in.
++// Pin SDK delivery, not the old helper: the tool now enters manager admission tracking.
++const sdkSteer = vi.fn();
+ beforeEach(() => {
+-  vi.mocked(steerAgent).mockReset();
++  sdkSteer.mockReset().mockResolvedValue(undefined);
+   vi.mocked(runAgent).mockReset();
+ });
+ 
+ /** Enough of an AgentSession for the manager's and index's onSessionCreated hooks. */
+ function fakeSession(overrides: Record<string, unknown> = {}) {
+   return {
+-    steer: vi.fn().mockResolvedValue(undefined),
++    steer: sdkSteer,
+     dispose: vi.fn(),
+     subscribe: vi.fn(() => () => {}),
+     messages: [],
+@@ -113,7 +112,7 @@ describe("steer_subagent before the session exists", () => {
+     await lifecycle.get("session_shutdown")?.();
+   });
+ 
+-  it("does not call steerAgent — there is no session to steer yet", async () => {
++  it("does not call the SDK — there is no session to steer yet", async () => {
+     const { pi, tools, lifecycle } = makePi();
+     subagentsExtension(pi);
+     heldRun();
+@@ -122,7 +121,7 @@ describe("steer_subagent before the session exists", () => {
+     await flush();
+     await steer(tools, id, "hello");
+ 
+-    expect(steerAgent).not.toHaveBeenCalled();
++    expect(sdkSteer).not.toHaveBeenCalled();
+ 
+     await lifecycle.get("session_shutdown")?.();
+   });
+@@ -130,7 +129,7 @@ describe("steer_subagent before the session exists", () => {
+ 
+ describe("steer_subagent once the session exists", () => {
+   it("reports failure and emits no event when the steer throws", async () => {
+-    // The event is emitted only AFTER steerAgent resolves, so a failed steer
++    // The event is emitted only AFTER SDK delivery resolves, so a failed steer
+     // must not announce itself as delivered.
+     const { pi, tools, lifecycle } = makePi();
+     subagentsExtension(pi);
+@@ -141,7 +140,7 @@ describe("steer_subagent once the session exists", () => {
+     run.create(fakeSession());
+     await flush();
+ 
+-    vi.mocked(steerAgent).mockRejectedValueOnce(new Error("session closed"));
++    sdkSteer.mockRejectedValueOnce(new Error("session closed"));
+     const result = await steer(tools, id, "too late");
+ 
+     expect(textOf(result)).toContain("Failed to steer agent");
+@@ -154,7 +153,7 @@ describe("steer_subagent once the session exists", () => {
+     await lifecycle.get("session_shutdown")?.();
+   });
+ 
+-  it("delivers through steerAgent and announces the steer on success", async () => {
++  it("delivers through the manager to the SDK and announces the steer on success", async () => {
+     const { pi, tools, lifecycle } = makePi();
+     subagentsExtension(pi);
+     const run = heldRun();
+@@ -164,10 +163,9 @@ describe("steer_subagent once the session exists", () => {
+     run.create(fakeSession());
+     await flush();
+ 
+-    vi.mocked(steerAgent).mockResolvedValueOnce(undefined as any);
+     const result = await steer(tools, id, "refocus");
+ 
+-    expect(steerAgent).toHaveBeenCalledWith(expect.anything(), "refocus");
++    expect(sdkSteer).toHaveBeenCalledWith("refocus");
+     expect(textOf(result)).toContain("Steering message sent");
+     expect(pi.events.emit).toHaveBeenCalledWith("subagents:steered", { id, message: "refocus" });
+ 
+diff --git a/src/control-model-scope.ts b/src/control-model-scope.ts
+new file mode 100644
+index 0000000..967f503
+--- /dev/null
++++ b/src/control-model-scope.ts
+@@ -0,0 +1,55 @@
++/** Strict, uncached scope for explicit child controls; legacy launch policy is unchanged. */
++import { readFileSync } from "node:fs";
++import { join } from "node:path";
++import type { Api, Model } from "@earendil-works/pi-ai";
++import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
++import * as piSdk from "@earendil-works/pi-coding-agent";
++
++export type ControlScopeResolver = (patterns: string[], models: readonly Model<Api>[]) => {
++  scopedModels: { model: Model<Api>; thinkingLevel?: string }[];
++  diagnostics: readonly unknown[];
++};
++
++export function controlScopeResolver(): ControlScopeResolver | undefined {
++  // Namespace lookup avoids requiring a named export that Pi 0.84.2 lacks.
++  if (!("resolveModelScopeFromModels" in piSdk)) return undefined;
++  const resolve = (piSdk as unknown as { resolveModelScopeFromModels?: ControlScopeResolver }).resolveModelScopeFromModels;
++  return typeof resolve === "function" ? resolve : undefined;
++}
++
++function readPatterns(path: string): string[] | undefined {
++  let text: string;
++  try { text = readFileSync(path, "utf8"); }
++  catch (error) {
++    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
++    throw error;
++  }
++  const settings: unknown = JSON.parse(text);
++  if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error("Invalid settings");
++  if (!("enabledModels" in settings)) return undefined;
++  const patterns = settings.enabledModels;
++  if (!Array.isArray(patterns) || !patterns.every(p => typeof p === "string" && p.trim().length > 0)) throw new Error("Invalid enabledModels");
++  return patterns;
++}
++
++/** Undefined means authorized; diagnostics and restricted-empty sets never widen scope. */
++export function checkControlScope(
++  cwd: string,
++  registry: ExtensionContext["modelRegistry"],
++  target?: { provider: string; id: string },
++): "unsupported" | "scope-unknown" | "scope-denied" | undefined {
++  const resolve = controlScopeResolver();
++  if (!resolve) return "unsupported";
++  try {
++    const global = readPatterns(join(piSdk.getAgentDir(), "settings.json"));
++    const project = readPatterns(join(cwd, ".pi", "settings.json"));
++    const patterns = project ?? global;
++    if (!patterns?.length) return undefined;
++    // A model candidate shortlist is not a scope universe. Do not cache by patterns alone.
++    const models = registry.getAvailable?.() ?? registry.getAll();
++    const result = resolve(patterns, models);
++    if (result.diagnostics.length || result.scopedModels.length === 0) return "scope-denied";
++    if (target && !result.scopedModels.some(({ model }) => model.provider === target.provider && model.id === target.id)) return "scope-denied";
++    return undefined;
++  } catch { return "scope-unknown"; }
++}
+diff --git a/src/idle-child-configuration.ts b/src/idle-child-configuration.ts
+new file mode 100644
+index 0000000..f6c2e2d
+--- /dev/null
++++ b/src/idle-child-configuration.ts
+@@ -0,0 +1,179 @@
++/** Public structural compatibility with Pi's additive atomic configuration API.
++ * Kept local so ordinary Agent loading still works on Pi 0.84.2.
++ */
++import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
++import type { AgentManager } from "./agent-manager.js";
++import { checkControlScope, controlScopeResolver } from "./control-model-scope.js";
++import type { AgentRecord, ThinkingLevel } from "./types.js";
++
++export interface ChildConfigurationSnapshot {
++  readonly sessionId: string;
++  readonly revision: number;
++  readonly model: Readonly<{ provider: string; id: string }> | undefined;
++  readonly thinkingLevel: ThinkingLevel;
++}
++export type ChildConfigurationReason = "busy" | "disposed" | "stale" | "invalid" | "unauthorized" | "cancelled" | "operation-conflict" | "capacity" | "storage" | "unsupported" | "not-found" | "scope-unknown" | "scope-denied";
++export interface ChildConfigurationReceipt {
++  readonly status: "committed" | "noop";
++  readonly operationId: string;
++  readonly before: ChildConfigurationSnapshot;
++  readonly after: ChildConfigurationSnapshot;
++  readonly revision: number;
++  readonly notificationErrors: readonly string[];
++}
++export type ChildConfigurationResult = ChildConfigurationReceipt | { status: "rejected"; operationId: string; reason: ChildConfigurationReason };
++export type ChildConfigurationSnapshotResult = { status: "ready"; childId: string; snapshot: ChildConfigurationSnapshot } | { status: "rejected"; reason: ChildConfigurationReason };
++export interface ConfigureIdleChildRequest {
++  operationId: string;
++  childId: string;
++  expectedSessionId: string;
++  expectedRevision: number;
++  model: { provider: string; id: string };
++  thinking: ThinkingLevel;
++  signal?: AbortSignal;
++}
++export interface ChildConfigurationReceiptRequest {
++  operationId: string;
++  childId: string;
++  expectedSessionId: string;
++}
++export interface AtomicConfigurationRequest {
++  operationId: string;
++  expected: ChildConfigurationSnapshot;
++  target: { provider: string; id: string; thinkingLevel: ThinkingLevel };
++  signal?: AbortSignal;
++  validateCommit?: () => boolean;
++}
++export interface AtomicConfigurationSession {
++  getConfigurationSnapshot(): ChildConfigurationSnapshot;
++  configureIfIdle(request: AtomicConfigurationRequest): Promise<ChildConfigurationResult>;
++  getConfigurationReceipt(operationId: string): ChildConfigurationReceipt | undefined;
++}
++export interface ChildControlHost { ctx: ExtensionContext | undefined; epoch: number; ownsRegistry: boolean }
++
++const OPERATION_CAPACITY = 1024;
++const LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
++type Lease = NonNullable<ReturnType<AgentManager["getIdleChildLease"]>>;
++interface Operation {
++  key: string;
++  signal?: AbortSignal;
++  session: AtomicConfigurationSession;
++  request: AtomicConfigurationRequest;
++  promise: Promise<ChildConfigurationResult>;
++}
++
++export class IdleChildControls {
++  private operations = new WeakMap<AgentRecord, Map<string, Operation>>();
++  constructor(private manager: AgentManager, private getHost: () => ChildControlHost) {}
++
++  private authorize(childId: string): { lease: Lease; session: AtomicConfigurationSession; host: ChildControlHost; valid: () => boolean } | { reason: ChildConfigurationReason } {
++    try {
++      const host = this.getHost();
++      if (!host.ownsRegistry || !host.ctx) return { reason: "unauthorized" };
++      const record = this.manager.getRecord(childId);
++      if (!record) return { reason: "not-found" };
++      const lease = this.manager.getIdleChildLease(childId, host.ctx);
++      if (!lease) return { reason: "unauthorized" };
++      const session = lease.session as unknown as Partial<AtomicConfigurationSession>;
++      if (!controlScopeResolver() || typeof session.getConfigurationSnapshot !== "function" ||
++        typeof session.configureIfIdle !== "function" || typeof session.getConfigurationReceipt !== "function") return { reason: "unsupported" };
++      const registry = host.ctx.modelRegistry;
++      const cwd = host.ctx.cwd;
++      const valid = () => {
++        try {
++          const current = this.getHost();
++          return current.ownsRegistry && current.ctx === host.ctx && current.epoch === host.epoch &&
++            current.ctx?.modelRegistry === registry && current.ctx?.cwd === cwd && lease.valid();
++        } catch { return false; }
++      };
++      return { lease, session: session as AtomicConfigurationSession, host, valid };
++    } catch { return { reason: "unauthorized" }; }
++  }
++
++  getIdleChildConfigurationSnapshot(childId: string): ChildConfigurationSnapshotResult {
++    const auth = this.authorize(childId);
++    if ("reason" in auth) return { status: "rejected", reason: auth.reason };
++    try {
++      const reason = checkControlScope(auth.lease.configCwd, auth.host.ctx!.modelRegistry);
++      if (reason) return { status: "rejected", reason };
++      const snapshot = auth.session.getConfigurationSnapshot();
++      if (!auth.valid()) return { status: "rejected", reason: "unauthorized" };
++      return { status: "ready", childId, snapshot };
++    } catch { return { status: "rejected", reason: "unsupported" }; }
++  }
++
++  configureIdleChild(input: ConfigureIdleChildRequest): Promise<ChildConfigurationResult> {
++    const reject = (reason: ChildConfigurationReason): Promise<ChildConfigurationResult> =>
++      Promise.resolve({ status: "rejected", operationId: input?.operationId, reason });
++    if (!input || typeof input.operationId !== "string" || !input.operationId.length || input.operationId.length > 256 ||
++      typeof input.childId !== "string" || typeof input.expectedSessionId !== "string" ||
++      !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 ||
++      !input.model || typeof input.model.provider !== "string" || !input.model.provider.length ||
++      typeof input.model.id !== "string" || !input.model.id.length || !LEVELS.includes(input.thinking) ||
++      (input.signal !== undefined && !(input.signal instanceof AbortSignal))) return reject("invalid");
++    const auth = this.authorize(input.childId);
++    if ("reason" in auth) return reject(auth.reason);
++    const { lease, session, host } = auth;
++    const registry = host.ctx!.modelRegistry;
++    const target = Object.freeze({ provider: input.model.provider, id: input.model.id, thinkingLevel: input.thinking });
++    const key = JSON.stringify([input.childId, input.expectedSessionId, input.expectedRevision, target.provider, target.id, target.thinkingLevel]);
++    let cache = this.operations.get(lease.record);
++    const existing = cache?.get(input.operationId);
++    if (existing && (existing.key !== key || existing.signal !== input.signal)) return reject("operation-conflict");
++    const scopeReason = checkControlScope(lease.configCwd, registry, target);
++    if (scopeReason) return reject(scopeReason);
++    let snapshot: ChildConfigurationSnapshot;
++    try { snapshot = session.getConfigurationSnapshot(); } catch { return reject("unsupported"); }
++    if (!auth.valid()) return reject("unauthorized");
++    if (snapshot.sessionId !== input.expectedSessionId) return reject("stale");
++    if (existing) {
++      if (existing.session !== session) return reject("unauthorized");
++      // Receipt lookup during notifications must not await its own notification completion.
++      const receipt = session.getConfigurationReceipt(input.operationId);
++      return receipt ? Promise.resolve(receipt) : existing.promise;
++    }
++    if (snapshot.revision !== input.expectedRevision) return reject("stale");
++    if (cache && cache.size >= OPERATION_CAPACITY) return reject("capacity");
++    const request: AtomicConfigurationRequest = {
++      operationId: input.operationId,
++      expected: snapshot,
++      target,
++      signal: input.signal,
++      validateCommit: () => {
++        try {
++          if (!auth.valid()) return false;
++          const now = session.getConfigurationSnapshot();
++          if (now.sessionId !== snapshot.sessionId || now.revision !== snapshot.revision) return false;
++          if (checkControlScope(lease.configCwd, registry, target) !== undefined) return false;
++          // Scope resolution may be user/provider code. Check identities once more after it.
++          return auth.valid();
++        } catch { return false; }
++      },
++    };
++    // Insert before invoking Pi: public notifications can synchronously reenter us.
++    let resolve!: (result: ChildConfigurationResult) => void;
++    let fail!: (error: unknown) => void;
++    const promise = new Promise<ChildConfigurationResult>((yes, no) => { resolve = yes; fail = no; });
++    if (!cache) { cache = new Map(); this.operations.set(lease.record, cache); }
++    cache.set(input.operationId, { key, signal: input.signal, session, request, promise });
++    try { void session.configureIfIdle(request).then(resolve, fail); } catch (error) { fail(error); }
++    return promise;
++  }
++
++  getIdleChildConfigurationReceipt(input: ChildConfigurationReceiptRequest): ChildConfigurationResult {
++    const reject = (reason: ChildConfigurationReason): ChildConfigurationResult => ({ status: "rejected", operationId: input?.operationId, reason });
++    if (!input || typeof input.operationId !== "string" || typeof input.childId !== "string" || typeof input.expectedSessionId !== "string") return reject("invalid");
++    const auth = this.authorize(input.childId);
++    if ("reason" in auth) return reject(auth.reason);
++    const { session, lease, host } = auth;
++    if (session.getConfigurationSnapshot().sessionId !== input.expectedSessionId) return reject("stale");
++    const operation = this.operations.get(lease.record)?.get(input.operationId);
++    if (!operation) return reject("not-found");
++    if (operation.session !== session) return reject("unauthorized");
++    const reason = checkControlScope(lease.configCwd, host.ctx!.modelRegistry, operation.request.target);
++    if (reason) return reject(reason);
++    const receipt = session.getConfigurationReceipt(input.operationId);
++    if (!auth.valid()) return reject("unauthorized");
++    return receipt ?? reject("not-found");
++  }
++}
+diff --git a/test/idle-child-configuration.test.ts b/test/idle-child-configuration.test.ts
+new file mode 100644
+index 0000000..8673510
+--- /dev/null
++++ b/test/idle-child-configuration.test.ts
+@@ -0,0 +1,341 @@
++// Unit boundaries: real AgentManager, fake runner and atomic SDK session. No native/provider execution.
++import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import { join } from "node:path";
++import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
++import * as piSdk from "@earendil-works/pi-coding-agent";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { AgentManager } from "../src/agent-manager.js";
++import { resumeAgent, runAgent } from "../src/agent-runner.js";
++import { type AtomicConfigurationRequest, type ChildConfigurationReceipt, type ChildConfigurationSnapshot, IdleChildControls } from "../src/idle-child-configuration.js";
++
++vi.mock("../src/agent-runner.js", () => ({ runAgent: vi.fn(), resumeAgent: vi.fn() }));
++vi.mock("@earendil-works/pi-coding-agent", () => ({
++  getAgentDir: () => process.env.PI_CODING_AGENT_DIR,
++  // Unit resolver double, not evidence of native Pi pattern semantics.
++  resolveModelScopeFromModels: vi.fn((patterns: string[], models: { provider: string; id: string }[]) => {
++    const selected = models.filter(m => patterns.some(p => p === `${m.provider}/*` || p === `${m.provider}/${m.id}`));
++    return { scopedModels: selected.map(model => ({ model })), diagnostics: selected.length ? [] : [{ kind: "no-match" }] };
++  }),
++}));
++
++function atomicSession() {
++  let snapshot: ChildConfigurationSnapshot = { sessionId: "child-session", revision: 0, model: { provider: "local", id: "a" }, thinkingLevel: "off" };
++  const receipts = new Map<string, ChildConfigurationReceipt>();
++  let release = () => {};
++  let gate = Promise.resolve();
++  const session = {
++    dispose: vi.fn(),
++    steer: vi.fn(async () => "queued"),
++    getConfigurationSnapshot: () => Object.freeze({ ...snapshot }),
++    getConfigurationReceipt: (id: string) => receipts.get(id),
++    configureIfIdle: vi.fn(async (request: AtomicConfigurationRequest) => {
++      await gate;
++      if (request.signal?.aborted) return { status: "rejected" as const, operationId: request.operationId, reason: "cancelled" as const };
++      if (!request.validateCommit?.()) return { status: "rejected" as const, operationId: request.operationId, reason: "unauthorized" as const };
++      const before = snapshot;
++      const noop = before.model?.id === request.target.id && before.thinkingLevel === request.target.thinkingLevel;
++      snapshot = { ...before, revision: before.revision + (noop ? 0 : 1), model: { provider: request.target.provider, id: request.target.id }, thinkingLevel: request.target.thinkingLevel };
++      const result: ChildConfigurationReceipt = { status: noop ? "noop" : "committed", operationId: request.operationId, before, after: snapshot, revision: snapshot.revision, notificationErrors: ["unit notification failure"] };
++      if (!noop) receipts.set(request.operationId, result);
++      return result;
++    }),
++  };
++  return { session, pause: () => { gate = new Promise<void>(resolve => { release = resolve; }); }, release: () => release() };
++}
++
++describe("retained idle child configuration (unit)", () => {
++  let dir: string;
++  let manager: AgentManager;
++  let controls: IdleChildControls;
++  let ctx: ExtensionContext;
++  let active: ExtensionContext | undefined;
++  let epoch: number;
++  let ownsRegistry: boolean;
++  let owner: string;
++  let child: ReturnType<typeof atomicSession>;
++  let id: string;
++  const request = (operationId = "op") => ({ operationId, childId: id, expectedSessionId: "child-session", expectedRevision: 0, model: { provider: "local", id: "b" }, thinking: "high" as const });
++  const settings = (text: string) => writeFileSync(join(dir, ".pi", "settings.json"), text);
++
++  beforeEach(async () => {
++    dir = mkdtempSync(join(process.cwd(), ".control-test-"));
++    mkdirSync(join(dir, ".pi"));
++    mkdirSync(join(dir, "global"));
++    vi.stubEnv("PI_CODING_AGENT_DIR", join(dir, "global"));
++    child = atomicSession();
++    owner = "root";
++    epoch = 0;
++    ownsRegistry = true;
++    ctx = { cwd: dir, sessionManager: { getSessionId: () => owner }, modelRegistry: { getAll: () => [{ provider: "local", id: "a" }, { provider: "local", id: "b" }] } } as unknown as ExtensionContext;
++    active = ctx;
++    manager = new AgentManager(undefined, 1);
++    controls = new IdleChildControls(manager, () => ({ ctx: active, epoch, ownsRegistry }));
++    vi.mocked(runAgent).mockImplementation(async (_ctx, _type, _prompt, options) => {
++      options.onSessionCreated?.(child.session as unknown as AgentSession);
++      return { responseText: "done", session: child.session as unknown as AgentSession, aborted: false, steered: false };
++    });
++    vi.mocked(resumeAgent).mockResolvedValue({ text: "resumed" });
++    id = manager.spawn({} as ExtensionAPI, ctx, "general-purpose", "run", { description: "unit", rootSessionId: "forged-lineage" });
++    await manager.getRecord(id)!.promise;
++    await manager.awaitStartup(id);
++  });
++  afterEach(async () => { await manager.dispose(); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs(); vi.clearAllMocks(); });
++
++  it("reads snapshots and commits with diagnostic receipts, without defaults or resume", async () => {
++    expect(controls.getIdleChildConfigurationSnapshot(id)).toMatchObject({ status: "ready", snapshot: { sessionId: "child-session", revision: 0 } });
++    const result = await controls.configureIdleChild(request());
++    expect(result).toMatchObject({ status: "committed", revision: 1, notificationErrors: ["unit notification failure"] });
++    expect(controls.getIdleChildConfigurationReceipt(request())).toBe(result);
++    expect(resumeAgent).not.toHaveBeenCalled();
++  });
++  it("returns noop without a committed receipt", async () => {
++    expect(await controls.configureIdleChild({ ...request(), model: { provider: "local", id: "a" }, thinking: "off" })).toMatchObject({ status: "noop" });
++    expect(controls.getIdleChildConfigurationReceipt(request())).toMatchObject({ status: "rejected", reason: "not-found" });
++  });
++  it("fails closed when the child lacks the atomic public API", () => {
++    Object.assign(child.session, { configureIfIdle: undefined });
++    expect(controls.getIdleChildConfigurationSnapshot(id)).toMatchObject({ status: "rejected", reason: "unsupported" });
++  });
++  it.each(["current", "epoch", "registry", "root", "record-owner", "session", "remove", "dispose", "steers"])("denies %s changes during deferred auth", async change => {
++    child.pause();
++    const pending = controls.configureIdleChild(request());
++    if (change === "current") active = { ...ctx };
++    if (change === "epoch") epoch++;
++    if (change === "registry") ownsRegistry = false;
++    if (change === "root") owner = "another";
++    if (change === "record-owner") manager.getRecord(id)!.workflowId = "wf";
++    if (change === "session") manager.getRecord(id)!.session = {} as AgentSession;
++    if (change === "remove") manager.clearCompleted();
++    if (change === "dispose") await manager.dispose();
++    if (change === "steers") manager.getRecord(id)!.pendingSteers = ["pending"];
++    child.release();
++    expect(await pending).toMatchObject({ status: "rejected", reason: "unauthorized" });
++    expect(child.session.getConfigurationSnapshot().revision).toBe(0);
++  });
++  it("invalidates completed foreground-run ABA while auth waits", async () => {
++    child.pause();
++    const pending = controls.configureIdleChild(request());
++    await manager.resume(id, "again");
++    expect(manager.getRecord(id)!.status).toBe("completed");
++    child.release();
++    expect(await pending).toMatchObject({ status: "rejected", reason: "unauthorized" });
++  });
++  it.each([false, true])("denies queue admission even before SDK starts (aborted=%s)", async aborted => {
++    vi.mocked(runAgent).mockImplementation(() => new Promise(() => {}));
++    manager.spawn({} as ExtensionAPI, ctx, "general-purpose", "holder", { description: "holder", isBackground: true });
++    child.pause();
++    const pending = controls.configureIdleChild(request());
++    await manager.resume(id, "queued", undefined, { isBackground: true });
++    expect(manager.getRecord(id)!.status).toBe("queued");
++    expect(await manager.resume(id, "foreground reentry")).toBeUndefined();
++    if (aborted) {
++      manager.abort(id);
++      // Restore the visible terminal state to isolate the generation guard from status.
++      manager.getRecord(id)!.status = "completed";
++    }
++    child.release();
++    expect(await pending).toMatchObject({ status: "rejected", reason: "unauthorized" });
++    expect(resumeAgent).not.toHaveBeenCalled();
++  });
++  it("denies foreground reentry into a running record", async () => {
++    vi.mocked(resumeAgent).mockImplementationOnce(() => new Promise(() => {}));
++    void manager.resume(id, "first");
++    expect(await manager.resume(id, "second")).toBeUndefined();
++    expect(resumeAgent).toHaveBeenCalledTimes(1);
++  });
++  it("tracks pre-session queued steers until their SDK delivery settles", async () => {
++    let create!: () => void;
++    let finish!: () => void;
++    let finishSteer!: () => void;
++    child.session.steer.mockImplementationOnce(() => new Promise(resolve => { finishSteer = () => resolve("queued"); }));
++    vi.mocked(runAgent).mockImplementationOnce((_c, _t, _p, options) => new Promise(resolve => {
++      create = () => options.onSessionCreated?.(child.session as unknown as AgentSession);
++      finish = () => resolve({ responseText: "done", session: child.session as unknown as AgentSession, aborted: false, steered: false });
++    }));
++    const other = manager.spawn({} as ExtensionAPI, ctx, "general-purpose", "run", { description: "delayed session" });
++    expect(manager.steer(other, "queued")).toBe(true);
++    create(); finish();
++    await manager.getRecord(other)!.promise;
++    await manager.awaitStartup(other);
++    expect(manager.getRecord(other)!.pendingSteers).toBeUndefined();
++    expect(controls.getIdleChildConfigurationSnapshot(other)).toMatchObject({ reason: "unauthorized" });
++    finishSteer();
++    await Promise.resolve(); await Promise.resolve();
++    expect(controls.getIdleChildConfigurationSnapshot(other)).toMatchObject({ status: "ready" });
++  });
++  it("refuses completed records while a manager steer delivery is still pending", async () => {
++    let finishRun!: (result: { text: string }) => void;
++    let finishSteer!: () => void;
++    vi.mocked(resumeAgent).mockImplementationOnce(() => new Promise(resolve => { finishRun = resolve; }));
++    child.session.steer.mockImplementationOnce(() => new Promise(resolve => { finishSteer = () => resolve("queued"); }));
++    await manager.resume(id, "again", undefined, { isBackground: true });
++    const steered = manager.steerAndWait(id, "pending");
++    finishRun({ text: "done" });
++    await manager.getRecord(id)!.promise;
++    expect(manager.getRecord(id)!.status).toBe("completed");
++    expect(controls.getIdleChildConfigurationSnapshot(id)).toMatchObject({ reason: "unauthorized" });
++    finishSteer(); await steered;
++    expect(controls.getIdleChildConfigurationSnapshot(id)).toMatchObject({ status: "ready" });
++  });
++  it("can replay a committed receipt from inside Pi notification dispatch", async () => {
++    let finish!: () => void;
++    let replay: Promise<unknown> | undefined;
++    let receipt: ChildConfigurationReceipt | undefined;
++    child.session.getConfigurationReceipt = () => receipt;
++    child.session.configureIfIdle.mockImplementationOnce(input => {
++      expect(input.validateCommit?.()).toBe(true);
++      const snapshot = child.session.getConfigurationSnapshot();
++      receipt = { status: "committed", operationId: input.operationId, before: snapshot, after: snapshot, revision: snapshot.revision, notificationErrors: [] };
++      replay = controls.configureIdleChild(request());
++      return new Promise(resolve => { finish = () => resolve(receipt!); });
++    });
++    const pending = controls.configureIdleChild(request());
++    expect(await replay).toBe(receipt);
++    expect(controls.getIdleChildConfigurationReceipt(request())).toBe(receipt);
++    finish();
++    expect(await pending).toBe(receipt);
++    expect(child.session.configureIfIdle).toHaveBeenCalledTimes(1);
++  });
++  it("honors cancellation", async () => {
++    child.pause();
++    const abort = new AbortController();
++    const pending = controls.configureIdleChild({ ...request(), signal: abort.signal });
++    abort.abort(); child.release();
++    expect(await pending).toMatchObject({ reason: "cancelled" });
++  });
++  it("coalesces retries with stable callback identity and refuses changed values or signal", async () => {
++    child.pause();
++    const first = controls.configureIdleChild(request());
++    const second = controls.configureIdleChild(request());
++    expect(second).toBe(first);
++    expect(await controls.configureIdleChild({ ...request(), thinking: "low" })).toMatchObject({ reason: "operation-conflict" });
++    expect(await controls.configureIdleChild({ ...request(), signal: new AbortController().signal })).toMatchObject({ reason: "operation-conflict" });
++    child.release();
++    const result = await first;
++    expect(await second).toBe(result);
++    expect(await controls.configureIdleChild(request())).toBe(result);
++    expect(child.session.configureIfIdle).toHaveBeenCalledTimes(1);
++    owner = "another";
++    expect(controls.getIdleChildConfigurationReceipt(request())).toMatchObject({ reason: "unauthorized" });
++    expect(await controls.configureIdleChild(request())).toMatchObject({ reason: "unauthorized" });
++  });
++  it("bounds operation IDs without eviction", async () => {
++    for (let i = 0; i < 1024; i++) {
++      expect(await controls.configureIdleChild({ ...request(String(i)), model: { provider: "local", id: "a" }, thinking: "off" })).toMatchObject({ status: "noop" });
++    }
++    expect(await controls.configureIdleChild(request("overflow"))).toMatchObject({ reason: "capacity" });
++    expect(await controls.configureIdleChild({ ...request("0"), model: { provider: "local", id: "a" }, thinking: "off" })).toMatchObject({ status: "noop" });
++  });
++  it.each(["{", "null", "[]", '{"enabledModels":null}', '{"enabledModels":"local/*"}', '{"enabledModels":[17]}'])("refuses malformed settings %s", async text => {
++    settings(text);
++    expect(await controls.configureIdleChild(request())).toMatchObject({ reason: "scope-unknown" });
++  });
++  it("honors project override and globs against the full registry universe", async () => {
++    writeFileSync(join(dir, "global", "settings.json"), JSON.stringify({ enabledModels: ["none/*"] }));
++    settings(JSON.stringify({ enabledModels: ["local/*"] }));
++    expect(await controls.configureIdleChild(request())).toMatchObject({ status: "committed" });
++  });
++  it.each([{}, { enabledModels: [] }])("accepts unrestricted settings %j", async config => {
++    settings(JSON.stringify(config));
++    expect(await controls.configureIdleChild(request())).toMatchObject({ status: "committed" });
++  });
++  it("does not widen unmatched or resolved-empty restrictions", async () => {
++    settings(JSON.stringify({ enabledModels: ["absent/*"] }));
++    expect(await controls.configureIdleChild(request())).toMatchObject({ reason: "scope-denied" });
++  });
++  it("recomputes scope during auth and rejects changed or unreadable settings", async () => {
++    child.pause();
++    const pending = controls.configureIdleChild(request());
++    settings("{");
++    child.release();
++    expect(await pending).toMatchObject({ reason: "unauthorized" });
++  });
++  it("rechecks registry identity during auth", async () => {
++    child.pause(); const pending = controls.configureIdleChild(request());
++    Object.assign(ctx, { modelRegistry: { getAll: () => [] } });
++    child.release();
++    expect(await pending).toMatchObject({ reason: "unauthorized" });
++  });
++  it("denies a changed active root cwd during authentication", async () => {
++    child.pause(); const pending = controls.configureIdleChild(request());
++    Object.assign(ctx, { cwd: join(dir, "another") });
++    child.release();
++    expect(await pending).toMatchObject({ reason: "unauthorized" });
++  });
++  it("rechecks snapshot authorization after synchronous scope resolver callbacks", () => {
++    const resolver = (piSdk as unknown as { resolveModelScopeFromModels: ReturnType<typeof vi.fn> }).resolveModelScopeFromModels;
++    settings(JSON.stringify({ enabledModels: ["local/*"] }));
++    resolver.mockImplementationOnce(() => { owner = "another"; return { scopedModels: [{ model: { provider: "local", id: "a" } }], diagnostics: [] }; });
++    expect(controls.getIdleChildConfigurationSnapshot(id)).toMatchObject({ reason: "unauthorized" });
++  });
++  it("rechecks receipt authorization after synchronous scope resolver callbacks", async () => {
++    await controls.configureIdleChild(request());
++    settings(JSON.stringify({ enabledModels: ["local/*"] }));
++    const resolver = (piSdk as unknown as { resolveModelScopeFromModels: ReturnType<typeof vi.fn> }).resolveModelScopeFromModels;
++    resolver.mockImplementationOnce(() => { owner = "another"; return { scopedModels: [{ model: { provider: "local", id: "b" } }], diagnostics: [] }; });
++    expect(controls.getIdleChildConfigurationReceipt(request())).toMatchObject({ reason: "unauthorized" });
++  });
++  it("checks the full available registry, not getAll or router candidates", async () => {
++    const universe = [{ provider: "local", id: "a" }, { provider: "local", id: "b" }, { provider: "other", id: "c" }];
++    Object.assign(ctx.modelRegistry, { getAvailable: () => universe, getAll: () => { throw new Error("wrong universe"); } });
++    settings(JSON.stringify({ enabledModels: ["local/*"] }));
++    expect(await controls.configureIdleChild(request())).toMatchObject({ status: "committed" });
++    const resolver = (piSdk as unknown as { resolveModelScopeFromModels: ReturnType<typeof vi.fn> }).resolveModelScopeFromModels;
++    expect(resolver).toHaveBeenCalledWith(["local/*"], universe);
++  });
++  it("keeps restricted-empty without diagnostics denied", async () => {
++    const resolver = (piSdk as unknown as { resolveModelScopeFromModels: ReturnType<typeof vi.fn> }).resolveModelScopeFromModels;
++    resolver.mockReturnValueOnce({ scopedModels: [], diagnostics: [] });
++    settings(JSON.stringify({ enabledModels: ["local/*"] }));
++    expect(await controls.configureIdleChild(request())).toMatchObject({ reason: "scope-denied" });
++  });
++  it("refuses unreadable files and a malformed global file despite project override", async () => {
++    mkdirSync(join(dir, ".pi", "settings.json"));
++    expect(await controls.configureIdleChild(request())).toMatchObject({ reason: "scope-unknown" });
++    rmSync(join(dir, ".pi", "settings.json"), { recursive: true });
++    settings(JSON.stringify({ enabledModels: [] }));
++    writeFileSync(join(dir, "global", "settings.json"), "{");
++    expect(await controls.configureIdleChild(request())).toMatchObject({ reason: "scope-unknown" });
++  });
++  it("lets explicit empty project settings override global restriction", async () => {
++    writeFileSync(join(dir, "global", "settings.json"), JSON.stringify({ enabledModels: ["none/*"] }));
++    settings(JSON.stringify({ enabledModels: [] }));
++    expect(await controls.configureIdleChild(request())).toMatchObject({ status: "committed" });
++  });
++  it("denies changed scope at commit and before exposing old receipts", async () => {
++    child.pause(); const pending = controls.configureIdleChild(request());
++    settings(JSON.stringify({ enabledModels: ["local/a"] }));
++    child.release();
++    expect(await pending).toMatchObject({ reason: "unauthorized" });
++    settings(JSON.stringify({ enabledModels: [] }));
++    expect(await controls.configureIdleChild(request("next"))).toMatchObject({ status: "committed" });
++    settings(JSON.stringify({ enabledModels: ["local/a"] }));
++    expect(controls.getIdleChildConfigurationReceipt(request("next"))).toMatchObject({ reason: "scope-denied" });
++  });
++  it("denies root manager replacement even when the new root reports the same ID", async () => {
++    child.pause(); const pending = controls.configureIdleChild(request());
++    Object.assign(ctx, { sessionManager: { getSessionId: () => "root" } });
++    child.release();
++    expect(await pending).toMatchObject({ reason: "unauthorized" });
++  });
++  it("does not convert workflow children into controllable records by deleting public lineage", async () => {
++    const other = manager.spawn({} as ExtensionAPI, ctx, "general-purpose", "run", { description: "owned", workflowId: "workflow" });
++    await manager.getRecord(other)!.promise;
++    await manager.awaitStartup(other);
++    manager.getRecord(other)!.workflowId = undefined;
++    expect(controls.getIdleChildConfigurationSnapshot(other)).toMatchObject({ reason: "unauthorized" });
++  });
++  it("rejects stale revision/session and invalid input before touching Pi", async () => {
++    expect(await controls.configureIdleChild({ ...request(), expectedRevision: 7 })).toMatchObject({ reason: "stale" });
++    expect(await controls.configureIdleChild({ ...request(), expectedSessionId: "other" })).toMatchObject({ reason: "stale" });
++    expect(await controls.configureIdleChild({ ...request(), operationId: "" })).toMatchObject({ reason: "invalid" });
++    expect(child.session.configureIfIdle).not.toHaveBeenCalled();
++  });
++  it("fails closed without a real owner but ordinary spawning still completes", async () => {
++    owner = "";
++    const other = manager.spawn({} as ExtensionAPI, ctx, "general-purpose", "run", { description: "no owner", rootSessionId: "root" });
++    await manager.getRecord(other)!.promise;
++    expect(manager.getRecord(other)!.status).toBe("completed");
++    expect(controls.getIdleChildConfigurationSnapshot(other)).toMatchObject({ reason: "unauthorized" });
++  });
++});
+diff --git a/test/idle-child-registry.test.ts b/test/idle-child-registry.test.ts
+new file mode 100644
+index 0000000..b2ce4b1
+--- /dev/null
++++ b/test/idle-child-registry.test.ts
+@@ -0,0 +1,110 @@
++// Unit integration: actual extension registry/lifecycle, fake runner and atomic session.
++import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import { join } from "node:path";
++import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
++import * as piSdk from "@earendil-works/pi-coding-agent";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import * as runner from "../src/agent-runner.js";
++import type { AtomicConfigurationRequest, ChildConfigurationSnapshot, IdleChildControls } from "../src/idle-child-configuration.js";
++import extension from "../src/index.js";
++
++const feature = vi.hoisted(() => ({ enabled: true }));
++vi.mock("@earendil-works/pi-coding-agent", async () => {
++  const actual = await vi.importActual<typeof piSdk>("@earendil-works/pi-coding-agent");
++  return { ...actual, get resolveModelScopeFromModels() { return feature.enabled ? () => ({ scopedModels: [], diagnostics: [] }) : undefined; } };
++});
++vi.mock("../src/agent-runner.js", async () => {
++  const actual = await vi.importActual<typeof runner>("../src/agent-runner.js");
++  return { ...actual, runAgent: vi.fn() };
++});
++const KEY = Symbol.for("pi-subagents:manager");
++type Registry = Pick<IdleChildControls, "configureIdleChild" | "getIdleChildConfigurationSnapshot" | "getIdleChildConfigurationReceipt"> & {
++  spawn(pi: ExtensionAPI, ctx: ExtensionContext, type: string, prompt: string, options: { description: string; isBackground: boolean }): string;
++  waitForAll(): Promise<void>;
++};
++
++describe("idle child registry lifecycle (unit)", () => {
++  let dir: string;
++  let previousCwd: string;
++  let ctx: ExtensionContext;
++  let registry: Registry;
++  let pi: ExtensionAPI;
++  let handlers: Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>;
++  let release: () => void;
++  let gate: Promise<void>;
++  let configure: ReturnType<typeof vi.fn>;
++  const request = (childId: string, operationId = "op") => ({ operationId, childId, expectedSessionId: "child", expectedRevision: 0, model: { provider: "local", id: "b" }, thinking: "off" as const });
++  const spawn = async () => {
++    const id = registry.spawn(pi, ctx, "general-purpose", "unit", { description: "unit", isBackground: true });
++    await registry.waitForAll();
++    return id;
++  };
++  beforeEach(() => {
++    dir = mkdtempSync(join(process.cwd(), ".registry-test-"));
++    mkdirSync(join(dir, ".pi"));
++    writeFileSync(join(dir, ".pi", "subagents.json"), JSON.stringify({ schedulingEnabled: false, workflowsEnabled: false, fleetView: false, widgetMode: "off" }));
++    vi.stubEnv("HOME", dir); vi.stubEnv("PI_CODING_AGENT_DIR", join(dir, "global"));
++    previousCwd = process.cwd(); process.chdir(dir);
++    feature.enabled = true;
++    handlers = new Map();
++    pi = {
++      registerMessageRenderer: vi.fn(), registerEntryRenderer: vi.fn(), registerFlag: vi.fn(), getFlag: vi.fn(),
++      registerTool: vi.fn(), registerCommand: vi.fn(), appendEntry: vi.fn(), sendMessage: vi.fn(),
++      on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => handlers.set(name, handler),
++      events: { emit: vi.fn(), on: vi.fn(() => vi.fn()) },
++    } as unknown as ExtensionAPI;
++    ctx = { cwd: dir, hasUI: false, ui: { notify: vi.fn() }, sessionManager: { getSessionId: () => "root", getBranch: () => [] }, modelRegistry: { getAll: () => [] } } as unknown as ExtensionContext;
++    gate = new Promise<void>(resolve => { release = resolve; });
++    const snapshot: ChildConfigurationSnapshot = { sessionId: "child", revision: 0, model: { provider: "local", id: "a" }, thinkingLevel: "off" };
++    configure = vi.fn(async (input: AtomicConfigurationRequest) => {
++      await gate;
++      return input.validateCommit?.()
++        ? { status: "noop", operationId: input.operationId, before: snapshot, after: snapshot, revision: 0, notificationErrors: [] }
++        : { status: "rejected", operationId: input.operationId, reason: "unauthorized" };
++    });
++    const session = { dispose: vi.fn(), getConfigurationSnapshot: () => snapshot, configureIfIdle: configure, getConfigurationReceipt: () => undefined } as unknown as AgentSession;
++    vi.mocked(runner.runAgent).mockImplementation(async (_c, _t, _p, options) => {
++      options.onSessionCreated?.(session);
++      return { responseText: "done", session, aborted: false, steered: false };
++    });
++    delete (globalThis as Record<symbol, unknown>)[KEY];
++    extension(pi);
++    registry = (globalThis as Record<symbol, unknown>)[KEY] as Registry;
++  });
++  afterEach(async () => {
++    await handlers.get("session_shutdown")!({}, ctx);
++    delete (globalThis as Record<symbol, unknown>)[KEY];
++    process.chdir(previousCwd); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs(); vi.clearAllMocks();
++  });
++  it("registers exact public names but refuses controls before session_start", () => {
++    expect(registry.getIdleChildConfigurationSnapshot).toBeTypeOf("function");
++    expect(registry.configureIdleChild).toBeTypeOf("function");
++    expect(registry.getIdleChildConfigurationReceipt).toBeTypeOf("function");
++    expect(registry.getIdleChildConfigurationSnapshot("missing")).toMatchObject({ reason: "unauthorized" });
++  });
++  it("keeps ordinary spawning available when the new public Pi export is absent", async () => {
++    feature.enabled = false;
++    await handlers.get("session_start")!({}, ctx);
++    const id = await spawn();
++    expect(id).toBeTruthy();
++    expect(registry.getIdleChildConfigurationSnapshot(id)).toMatchObject({ reason: "unsupported" });
++    expect(await registry.configureIdleChild(request(id))).toMatchObject({ reason: "unsupported" });
++    expect(configure).not.toHaveBeenCalled();
++  });
++  it.each(["switch", "rebind", "shutdown", "registry"])("invalidates deferred configuration on %s", async change => {
++    await handlers.get("session_start")!({}, ctx);
++    const id = await spawn();
++    expect(registry.getIdleChildConfigurationSnapshot(id)).toMatchObject({ status: "ready", childId: id });
++    const pending = registry.configureIdleChild(request(id));
++    if (change === "switch") await handlers.get("session_before_switch")!({}, ctx);
++    if (change === "rebind") await handlers.get("session_start")!({}, ctx);
++    if (change === "shutdown") await handlers.get("session_shutdown")!({}, ctx);
++    if (change === "registry") (globalThis as Record<symbol, unknown>)[KEY] = {};
++    release();
++    expect(await pending).toMatchObject({ status: "rejected", reason: "unauthorized" });
++    if (change === "switch") {
++      // A cancelled switch does not fire session_start: the old context must still work.
++      expect(await registry.configureIdleChild(request(id, "after-cancelled-switch"))).toMatchObject({ status: "noop" });
++    }
++  });
++});

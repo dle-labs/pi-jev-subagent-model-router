@@ -1,0 +1,406 @@
+{
+  "executionPath": "tintin-native-Agent-public-control",
+  "verifiedContract": "local-patched-idle-configuration",
+  "fullRouterParityVerified": false,
+  "networkFetchAttempts": 0,
+  "registryReleased": true,
+  "host": {
+    "version": "1.0.0",
+    "entrySha256": "ee39170ca7f73db5d9968200a82a531d394e3b0f566f92e25164d455c6435ed1",
+    "atomicOperationSha256": "d40e410d3bae3ac96af7a4e191b9a5a8b07840544c41673340172797efcb138b"
+  },
+  "tintin": {
+    "version": "0.19.0",
+    "entrySha256": "e075d1a746060448ae4eb22ecfa17c4c3c1ff88e970bfc487900e09621c4ea48"
+  },
+  "scenarios": [
+    {
+      "phase": "idle",
+      "result": {
+        "status": "committed",
+        "operationId": "idle-operation",
+        "before": {
+          "sessionId": "01a1045e-66f6-7535-adff-9589aff38065",
+          "revision": 3,
+          "model": {
+            "provider": "jev-safe-before",
+            "id": "before"
+          },
+          "thinkingLevel": "off"
+        },
+        "after": {
+          "sessionId": "01a1045e-66f6-7535-adff-9589aff38065",
+          "revision": 4,
+          "model": {
+            "provider": "jev-safe-after",
+            "id": "after"
+          },
+          "thinkingLevel": "high"
+        },
+        "revision": 4,
+        "notificationErrors": []
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 2,
+      "finalModel": "after",
+      "finalThinking": "high",
+      "replayVerified": true,
+      "conflictRejected": true,
+      "nativeResumeAfterCommit": true,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "persisted",
+      "result": {
+        "status": "committed",
+        "operationId": "persisted-operation",
+        "before": {
+          "sessionId": "01a1045e-6713-7535-adff-958d2baf465e",
+          "revision": 3,
+          "model": {
+            "provider": "jev-safe-before",
+            "id": "before"
+          },
+          "thinkingLevel": "off"
+        },
+        "after": {
+          "sessionId": "01a1045e-6713-7535-adff-958d2baf465e",
+          "revision": 4,
+          "model": {
+            "provider": "jev-safe-after",
+            "id": "after"
+          },
+          "thinkingLevel": "high"
+        },
+        "revision": 4,
+        "notificationErrors": []
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 2,
+      "finalModel": "after",
+      "finalThinking": "high",
+      "replayVerified": true,
+      "conflictRejected": true,
+      "nativeResumeAfterCommit": true,
+      "diskPairVerified": true,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "scope-glob",
+      "result": {
+        "status": "committed",
+        "operationId": "scope-glob-operation",
+        "before": {
+          "sessionId": "01a1045e-6861-7535-adff-95911527a5d2",
+          "revision": 3,
+          "model": {
+            "provider": "jev-safe-before",
+            "id": "before"
+          },
+          "thinkingLevel": "off"
+        },
+        "after": {
+          "sessionId": "01a1045e-6861-7535-adff-95911527a5d2",
+          "revision": 4,
+          "model": {
+            "provider": "jev-safe-after",
+            "id": "after"
+          },
+          "thinkingLevel": "high"
+        },
+        "revision": 4,
+        "notificationErrors": []
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 2,
+      "finalModel": "after",
+      "finalThinking": "high",
+      "replayVerified": true,
+      "conflictRejected": true,
+      "nativeResumeAfterCommit": true,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "active",
+      "result": {
+        "status": "rejected",
+        "operationId": "active-operation",
+        "reason": "stale"
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 0,
+      "finalModel": "before",
+      "finalThinking": "off",
+      "replayVerified": false,
+      "conflictRejected": false,
+      "nativeResumeAfterCommit": false,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "settled",
+      "result": {
+        "status": "rejected",
+        "operationId": "settled-operation",
+        "reason": "stale"
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 0,
+      "finalModel": "before",
+      "finalThinking": "off",
+      "replayVerified": false,
+      "conflictRejected": false,
+      "nativeResumeAfterCommit": false,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "background-active",
+      "result": {
+        "status": "rejected",
+        "operationId": "background-active-operation",
+        "reason": "stale"
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 0,
+      "finalModel": "before",
+      "finalThinking": "off",
+      "replayVerified": false,
+      "conflictRejected": false,
+      "nativeResumeAfterCommit": false,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "queued",
+      "result": {
+        "status": "rejected",
+        "operationId": "queued-operation",
+        "reason": "unauthorized"
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 0,
+      "finalModel": "before",
+      "finalThinking": "off",
+      "replayVerified": false,
+      "conflictRejected": false,
+      "nativeResumeAfterCommit": false,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": true,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "compaction-active",
+      "result": {
+        "status": "rejected",
+        "operationId": "compaction-active-operation",
+        "reason": "stale"
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 0,
+      "finalModel": "before",
+      "finalThinking": "off",
+      "replayVerified": false,
+      "conflictRejected": false,
+      "nativeResumeAfterCommit": false,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": true,
+      "disposed": true
+    },
+    {
+      "phase": "busy",
+      "result": {
+        "status": "rejected",
+        "operationId": "busy-operation",
+        "reason": "unauthorized"
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 0,
+      "finalModel": "before",
+      "finalThinking": "off",
+      "replayVerified": false,
+      "conflictRejected": false,
+      "nativeResumeAfterCommit": false,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "cancelled",
+      "result": {
+        "status": "rejected",
+        "operationId": "cancelled-operation",
+        "reason": "cancelled"
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 0,
+      "finalModel": "before",
+      "finalThinking": "off",
+      "replayVerified": false,
+      "conflictRejected": false,
+      "nativeResumeAfterCommit": false,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "denied",
+      "result": {
+        "status": "rejected",
+        "operationId": "denied-operation",
+        "reason": "unauthorized"
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 0,
+      "finalModel": "before",
+      "finalThinking": "off",
+      "replayVerified": false,
+      "conflictRejected": false,
+      "nativeResumeAfterCommit": false,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "scope-changed",
+      "result": {
+        "status": "rejected",
+        "operationId": "scope-changed-operation",
+        "reason": "unauthorized"
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 0,
+      "finalModel": "before",
+      "finalThinking": "off",
+      "replayVerified": false,
+      "conflictRejected": false,
+      "nativeResumeAfterCommit": false,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "scope-malformed",
+      "result": {
+        "status": "rejected",
+        "operationId": "scope-malformed-operation",
+        "reason": "unauthorized"
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 0,
+      "finalModel": "before",
+      "finalThinking": "off",
+      "replayVerified": false,
+      "conflictRejected": false,
+      "nativeResumeAfterCommit": false,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "switch",
+      "result": {
+        "status": "rejected",
+        "operationId": "switch-operation",
+        "reason": "disposed"
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 0,
+      "finalModel": "before",
+      "finalThinking": "off",
+      "replayVerified": false,
+      "conflictRejected": false,
+      "nativeResumeAfterCommit": false,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    },
+    {
+      "phase": "stale",
+      "result": {
+        "status": "rejected",
+        "operationId": "stale-operation",
+        "reason": "stale"
+      },
+      "childUsesSelectedHost": true,
+      "parentUnchanged": true,
+      "globalSettingsUnchanged": true,
+      "transcriptPreserved": true,
+      "configurationEntriesAdded": 0,
+      "finalModel": "before",
+      "finalThinking": "off",
+      "replayVerified": false,
+      "conflictRejected": false,
+      "nativeResumeAfterCommit": false,
+      "diskPairVerified": false,
+      "queuedWithoutStarting": false,
+      "compactionStreamObserved": false,
+      "disposed": true
+    }
+  ],
+  "limits": "Local source patches only. Scope/ownership adversarial unit cases supplement native tests; not a full router parity claim."
+}
