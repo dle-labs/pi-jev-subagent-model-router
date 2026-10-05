@@ -2,7 +2,7 @@
 
 Status: Accepted full-parity requirements inventory and source evidence. The replacement hybrid design is in `2026-10-02-jev-subagent-routing-design.md`; implementation parity evidence is pending.
 
-The user now requires full feature parity with `pi-jev-model-router`. This supersedes the reduced-feature exclusions in `2026-10-02-jev-subagent-routing-design.md`. Preserve Tintin-only support, ordinary `Agent` interception, explicit-setting precedence, and an unchanged parent model unless the user approves a different integration model to resolve a parity constraint.
+The user requires full feature parity with `pi-jev-model-router`. This supersedes earlier reduced-feature exclusions; the current replacement design incorporates the full-parity requirement. Preserve Tintin-only support, ordinary `Agent` interception, explicit-setting precedence, and an unchanged parent model unless the user approves a different integration model to resolve a parity constraint.
 
 ## Source baseline
 
@@ -28,7 +28,7 @@ Recommended development basis: adapt this pinned source and retain its license/a
 | Thinking defaults | Route targets and native application | Preserve pinned thinkingLevel and model normalization, without overwriting explicit caller or agent-definition values. |
 | Provider independence/default chains | `config.ts` | Preserve mixed-provider routing, current default chains, and useDefaultModels=false behavior. |
 | Free pools | `config.ts`, `router.ts` | Preserve enabled/prefer/fallback-only, exact pool matching, and free-pool decision notes. |
-| Spend ledger | `budget.ts`, native event integration | Track attributable child cost without substituting parent cost or claiming unobserved child spend is zero. Deduplicate repeated cumulative observations. |
+| Spend ledger | `budget.ts`, native event integration | Track attributable child cost without substituting parent cost or claiming unobserved child spend is zero. Deduplicate by immutable launch-origin identity across reload/owner/SDK rebinding; atomically preserve exact bucket totals and cumulative watermarks without per-addition rounding loss. Separate reported dollars from proven pricing completeness; zero-defaulted missing costs and mixed subtotals remain incomplete without validated lifetime/frontier evidence. |
 | Daily/monthly budget policy | `budget.ts`, `router.ts` | Preserve UTC buckets, pressure calculation, soft downgrade, hard cap, and architectural-task exception. |
 | Jev counters | `budget.ts`, `index.ts` | Preserve request/token counters supported by upstream bookkeeping. |
 | Cache penalty estimation | `estimateCachePenaltyUsd` | Preserve pricing formula, unknown-price behavior, and true child-context scope; never price the unrelated parent transcript as a warm child cache. |
@@ -38,7 +38,7 @@ Recommended development basis: adapt this pinned source and retain its license/a
 | Status/on/off | `index.ts` commands | Preserve status, enabled toggles, route availability display, and budget pressure visibility. Use a noncolliding command namespace. |
 | Budget commands | `index.ts` commands | Preserve daily/monthly session-local policy changes. |
 | Why | `index.ts` commands | Reclassify the last eligible child task and show complete analysis/trace without launching another child. |
-| Revert | `index.ts` commands | Needs an explicitly approved child-scoped equivalent. Reverting a parent model or merely changing future defaults is not automatically equivalent to reverting an already-running child. |
+| Revert | `index.ts` commands | Approved adaptation: restore a verified prior model/thinking pair on the same retained idle child after an actual controller-mediated switch. Require a public shared native synchronization contract; changing parent settings or future launch defaults is not equivalent. |
 | Arbitrary-text recommendation | `/jev-route`, `jev_route` | Preserve command and callable recommendation tool without launching or modifying parent models. |
 | Ranking | `ranking.ts` | Preserve score cutoffs, kind scores, effective cost overrides, unknown costs, and provider spreading. |
 | Suggest/write | `index.ts`, `config.ts` | Preserve printed/generated routes and specialists, no-match protection, and manual-config precedence. |
@@ -69,20 +69,24 @@ The same review identified required corrections:
 
 Launch-only interception operates before a child exists. Do not silently classify existing-child cache switching, real child spend accounting, or revert as implemented because their upstream pure functions were copied. Verify the public Tintin lifecycle/record APIs and state the integration needed for each behavior.
 
-The API investigation is complete and found:
+The launch/observation API investigation found the following source-level facts. Safe-control synchronization has since been implemented and reviewed in local public-contract patches (see `../../upstream-synchronization-workspaces.md`); published-baseline support and complete router integration gates remain unverified:
 
-- Tintin top-level completed/failed lifecycle events report cumulative usage, including cost. Usage may be absent; missing observations are not proof of zero spend.
+- Tintin top-level completed/failed lifecycle events report cumulative usage, including cost. Usage may be absent; missing observations are not proof of zero spend. Numeric totals also are not proof of complete pricing: the backend substitutes zero for missing costs. Validate complete-lifetime coverage separately or label reported subtotals incomplete, including when zero.
 - Its documented `globalThis[Symbol.for("pi-subagents:manager")]` registry exposes `getRecord(id)` for top-level records. Records include cumulative lifetime usage and an optional public SDK `AgentSession`.
-- Track per-record accounted totals and charge only positive increments. Resume observations are cumulative. Ancestor totals can include descendant usage, so separately charging nested records would double-count.
+- Track immutable launch-origin accounted totals and charge only positive increments. Resume observations are cumulative; mutable toolCallId/startedAt and replacement SDK bindings must not reset the watermark. Ancestor totals can include descendant usage, so separately charging nested records would double-count. Exact decimal accumulation deliberately corrects upstream per-addition rounding loss; historical lost precision is not recoverable.
 - Created/started/terminal events are not a universal nested/workflow discovery mechanism. Spawn invocation snapshots are not reliable live model readings.
 - Installed Pi 1.0.0 SDK declarations expose `session.model`, `session.thinkingLevel`, `session.isStreaming`, `session.subscribe()`, `session.getContextUsage()`, `session.setModel()`, and `session.setThinkingLevel()`. Source confirms setModel validates auth and records the change; this alone does not establish safe active-stream switching or Tintin policy enforcement.
 - Launch-only input mutation cannot faithfully revert an admitted child's model or price a real same-child warm-cache switch. Child-session observation/control is an additional integration layer, not a feature provided by the launch hook.
 - Observed-spend budget pressure can govern subsequent launches, but outstanding concurrent spend can overshoot soft caps, as can upstream advisory budgets. Do not advertise hard live dollar caps.
 
-The user approved hybrid integration: automatic classification stays launch-only, while explicit child-scoped controls and observation support cache/revert/accounting semantics. The replacement specification defines cold-child cache and actual-switch-only revert adaptations. Public ownership, scope, retained-session, and safe idle-mutation contracts still require executable compatibility gates; do not claim unsupported model switching.
+The user approved hybrid integration: automatic classification stays launch-only, while explicit child-scoped controls and observation support cache/revert/accounting semantics. The replacement specification defines cold-child cache and actual-switch-only revert adaptations. Public ownership, scope, retained-session, and safe idle-mutation contracts still require executable compatibility gates; do not claim unsupported model switching. In particular, asynchronous SDK authentication allows native resume to race with a setter. The plan requires a separate early shared-synchronization capability probe, then later production-controller acceptance. The archived local patches now provide a public contract with a passing 15-scenario native control probe; the published pinned versions do not. Complete the remaining compatibility matrix and production-controller acceptance against the explicitly assembled patched runtime, without claiming installed-package support. A local lock or post-await idle check is insufficient.
+
+## Approved native lifecycle scope
+
+The user selected **“Scope to supported lifecycle (Recommended)”** after review confirmed no public same-record SDK replacement or retained-child ownership-transfer transition in the pinned backend. Those native matrix cells are not applicable, not passing evidence and not a requirement to invent new backend features. All inventory features above remain required, including observed accounting and safe cache-aware apply/revert. Retain disposal/context-invalidation tests and strict stale/foreign-binding refusals; unknown association changes never authorize control or reset spend. Supplemental record-tampering/unit fixtures cannot be presented as native transition proof. Future backend transitions require new integration evidence.
 
 ## Parity validation strategy
 
-Retain upstream policy/config/ranking/budget tests and run differential fixtures against the pinned baseline. Add tests for scope filtering, concurrent child accounting, explicit field precedence, mode behavior, skipped tasks, stale generations, cancellation, user/project configuration trust, command collisions, and accurate action labels. Live paid smoke tests are opt-in; mocked tests alone are not proof of full end-to-end compatibility.
+Retain upstream policy/config/ranking/budget tests and run differential fixtures against the pinned baseline. Run vendor test files in isolated processes and scope adapted discovery to test/; remove global node:os mocks from adapted tests and initialize temporary custom agent directories before host imports. Test the deliberate lossless-accounting correction separately from unchanged vendor expectations. Add tests for scope filtering, concurrent child accounting, explicit field precedence, mode behavior, skipped tasks, stale generations, cancellation, user/project configuration trust, command collisions, and accurate action labels. Live paid smoke tests are opt-in; mocked tests alone are not proof of full end-to-end compatibility.
 
 Every row above must have either passing acceptance evidence or a user-approved documented semantic adaptation before claiming full feature parity. Merely listing an unsupported feature or exposing a no-op configuration key does not satisfy parity.
